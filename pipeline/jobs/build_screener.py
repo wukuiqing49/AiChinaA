@@ -13,6 +13,13 @@ import pandas as pd
 from pipeline.calculations.technical import calculate_technical_factors, score_technical_factors
 from pipeline.providers.akshare_provider import AkShareProvider
 
+FALLBACK_CODES = (
+    "000001", "000002", "000333", "000651", "000858", "000938", "002230", "002415",
+    "002475", "002594", "300014", "300059", "300124", "300308", "300750", "600000",
+    "600036", "600150", "600276", "600519", "601318", "601398", "603259", "688111",
+    "688981", "920000", "920001", "920002", "920008",
+)
+
 
 def _column(frame: pd.DataFrame, names: tuple[str, ...]) -> str | None:
     return next((name for name in names if name in frame.columns), None)
@@ -34,6 +41,19 @@ def _normalize_codes(stock_list: pd.DataFrame) -> pd.DataFrame:
         output[target] = pd.to_numeric(stock_list[source], errors="coerce") if source else None
     output = output[output["code"].str.match(r"^\d{6}$")]
     return output.drop_duplicates("code").reset_index(drop=True)
+
+
+def _fallback_metadata(max_stocks: int) -> pd.DataFrame:
+    codes = list(FALLBACK_CODES if max_stocks <= 0 else FALLBACK_CODES[:max_stocks])
+    return pd.DataFrame(
+        {
+            "code": codes,
+            "name": codes,
+            "close": [None] * len(codes),
+            "pct_change": [None] * len(codes),
+            "turnover_rate": [None] * len(codes),
+        }
+    )
 
 
 def _market(code: str) -> str:
@@ -61,7 +81,11 @@ def build_payload(
     max_stocks: int,
     workers: int,
 ) -> tuple[dict[str, object], list[str]]:
-    metadata = _normalize_codes(provider.get_stock_list())
+    try:
+        metadata = _normalize_codes(provider.get_stock_list())
+    except RuntimeError as error:
+        print(f"stock list unavailable; using fallback universe: {error}")
+        metadata = _fallback_metadata(max_stocks)
     if max_stocks > 0:
         metadata = metadata.head(max_stocks)
     if metadata.empty:

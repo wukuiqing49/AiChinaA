@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
+from time import sleep
 
 import pandas as pd
 
@@ -194,10 +195,13 @@ class AkShareProvider:
     ) -> pd.DataFrame:
         failures: list[str] = []
         for source, operation in attempts:
-            try:
-                return self._tag_source(operation(), source)
-            except Exception as error:
-                failures.append(f"{source}: {type(error).__name__}: {error}")
+            for retry in range(3):
+                try:
+                    return self._tag_source(operation(), source)
+                except Exception as error:
+                    failures.append(f"{source}: {type(error).__name__}: {error}")
+                    if retry < 2:
+                        sleep(2**retry)
         raise RuntimeError("All AKShare source attempts failed. " + " | ".join(failures))
 
     @staticmethod
