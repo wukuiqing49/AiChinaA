@@ -8,7 +8,7 @@ const fixedAccountSchema = z.object({
   displayName: z.string().min(1).max(64).nullable().optional(),
   salt: z.string().min(16),
   passwordHash: z.string().min(32),
-  iterations: z.number().int().min(100_000).max(1_000_000),
+  iterations: z.number().int().min(100_000).max(100_000),
 });
 
 type FixedAccount = z.infer<typeof fixedAccountSchema>;

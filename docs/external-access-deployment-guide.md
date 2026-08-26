@@ -339,6 +339,12 @@ Worker 会记录 `runId`、发布日期、行数和状态。已完成的 `runId`
 
 说明 Worker 部署成功，但尚未向 `/api/internal/publish-screener` 发布有效筛选数据。
 
+可以使用 PowerShell 一键生成并上传固定账户：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File worker/scripts/setup-fixed-account.ps1 -Username wukuiqing
+```
+
 先生成筛选数据，再发布：
 
 ```powershell
