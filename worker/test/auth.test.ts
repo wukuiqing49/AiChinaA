@@ -30,4 +30,12 @@ describe("fixed account authentication", () => {
   it("rejects an invalid password", async () => {
     await expect(verifyFixedCredentials("tester", "incorrect-password", env)).rejects.toBeInstanceOf(AuthError);
   });
+
+  it("accepts a single account object for simple deployments", async () => {
+    const account = JSON.parse(env.FIXED_ACCOUNTS)[0];
+    const singleAccountEnv = { ...env, FIXED_ACCOUNTS: JSON.stringify(account) };
+    await expect(verifyFixedCredentials("tester", "correct-horse-battery-staple", singleAccountEnv)).resolves.toMatchObject({
+      username: "tester",
+    });
+  });
 });

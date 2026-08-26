@@ -58,7 +58,9 @@ function readFixedAccounts(env: Env): FixedAccount[] {
     throw new AuthError("固定账户尚未配置。");
   }
   try {
-    return z.array(fixedAccountSchema).min(1).parse(JSON.parse(env.FIXED_ACCOUNTS));
+    const parsed: unknown = JSON.parse(env.FIXED_ACCOUNTS);
+    const accounts = Array.isArray(parsed) ? parsed : [parsed];
+    return z.array(fixedAccountSchema).min(1).parse(accounts);
   } catch {
     throw new AuthError("固定账户配置无效。");
   }

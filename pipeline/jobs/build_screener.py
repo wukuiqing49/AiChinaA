@@ -121,9 +121,13 @@ def build_payload(
         latest_scores, on=["code", "trade_date"], how="left", suffixes=("", "_score")
     )
     result = result.merge(metadata, on="code", how="left", suffixes=("", "_meta"))
+    quote_columns = ["code", "close"]
+    for column in ("pct_change", "turnover_rate"):
+        if column in quotes.columns:
+            quote_columns.append(column)
     quote_latest = quotes.sort_values("trade_date").groupby("code", as_index=False).tail(1)
     result = result.merge(
-        quote_latest[["code", "close"]], on="code", how="left", suffixes=("", "_quote")
+        quote_latest[quote_columns], on="code", how="left", suffixes=("", "_quote")
     )
     trade_date = str(result["trade_date"].max())
 
@@ -142,8 +146,16 @@ def build_payload(
             "dataCompleteness": item.get("data_completeness"),
             "market": _market(code),
             "industry": "",
-            "pctChange": item.get("pct_change"),
-            "turnoverRate": item.get("turnover_rate"),
+            "pctChange": (
+                item.get("pct_change_quote")
+                if item.get("pct_change_quote") is not None
+                else item.get("pct_change")
+            ),
+            "turnoverRate": (
+                item.get("turnover_rate_quote")
+                if item.get("turnover_rate_quote") is not None
+                else item.get("turnover_rate")
+            ),
             "ret5d": item.get("ret_5d"),
             "ret20d": item.get("ret_20d"),
             "ret60d": item.get("ret_60d"),
