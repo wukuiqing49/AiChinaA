@@ -339,6 +339,15 @@ Worker 会记录 `runId`、发布日期、行数和状态。已完成的 `runId`
 
 说明 Worker 部署成功，但尚未向 `/api/internal/publish-screener` 发布有效筛选数据。
 
+先生成筛选数据，再发布：
+
+```powershell
+python -m pipeline.jobs.build_screener --max-stocks 300 --workers 4
+python -m pipeline.jobs.publish_screener --input reports/screener-publish.json
+```
+
+也可以在 GitHub Actions 中手动运行 `Sync stock screener data`。该工作流需要仓库 Secrets：`PUBLISH_URL` 和 `PUBLISH_SECRET`。
+
 ### 登录提示固定账户未配置
 
 重新执行：
