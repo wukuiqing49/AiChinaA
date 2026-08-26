@@ -174,7 +174,11 @@ pnpm --filter @a-share/worker exec wrangler secret put FIXED_ACCOUNTS
 生成随机值：
 
 ```powershell
-[Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(48))
+$bytes = New-Object byte[] 48
+$rng = [Security.Cryptography.RandomNumberGenerator]::Create()
+$rng.GetBytes($bytes)
+$rng.Dispose()
+[Convert]::ToBase64String($bytes)
 ```
 
 设置会话密钥：
@@ -190,7 +194,11 @@ pnpm --filter @a-share/worker exec wrangler secret put SESSION_SECRET
 再生成一个不同的随机值：
 
 ```powershell
-[Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(48))
+$bytes = New-Object byte[] 48
+$rng = [Security.Cryptography.RandomNumberGenerator]::Create()
+$rng.GetBytes($bytes)
+$rng.Dispose()
+[Convert]::ToBase64String($bytes)
 ```
 
 设置发布密钥：
