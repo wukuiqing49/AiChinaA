@@ -1,0 +1,28 @@
+[project]
+name = "a-share-quant-pipeline"
+version = "0.1.0"
+description = "Data validation and ingestion pipeline for the A-share quant dashboard."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "akshare>=1.18.94,<2",
+  "pandas>=2.2,<3",
+  "pyarrow>=18,<24",
+]
+
+[dependency-groups]
+dev = [
+  "pytest>=8.3,<9",
+  "ruff>=0.11,<1",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]

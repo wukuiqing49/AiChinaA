@@ -1,0 +1,12 @@
+name = "a-share-quant-app"
+main = "src/index.ts"
+compatibility_date = "2026-08-26"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "quant-core"
+database_id = "replace-at-deploy"
+
+[assets]
+directory = "../frontend/dist"
+run_worker_first = ["/api/*"]

@@ -1,0 +1,13 @@
+{
+  "name": "a-share-quant-workspace",
+  "private": true,
+  "packageManager": "pnpm@10.17.1",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "build": "pnpm --filter @a-share/frontend build && pnpm --filter @a-share/worker build",
+    "test:web": "pnpm --filter @a-share/worker test",
+    "lint:web": "pnpm --filter @a-share/frontend lint && pnpm --filter @a-share/worker lint"
+  }
+}
