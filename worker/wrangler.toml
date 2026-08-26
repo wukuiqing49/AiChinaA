@@ -5,7 +5,7 @@ compatibility_date = "2026-08-26"
 [[d1_databases]]
 binding = "DB"
 database_name = "quant-core"
-database_id = "replace-at-deploy"
+database_id = "05810905-06a8-4f9c-a03c-9bbed5f1b2c3"
 
 [assets]
 directory = "../frontend/dist"
