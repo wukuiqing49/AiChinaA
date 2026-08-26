@@ -49,7 +49,15 @@ def publish_payload(
     request = Request(
         url,
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        headers={"Content-Type": "application/json", "X-Publish-Secret": secret},
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "User-Agent": os.environ.get(
+                "PUBLISH_USER_AGENT",
+                "Mozilla/5.0 (compatible; AShareQuantPublisher/1.0; +https://github.com/wukuiqing49/AiChinaA)",
+            ),
+            "X-Publish-Secret": secret,
+        },
         method="POST",
     )
     try:
