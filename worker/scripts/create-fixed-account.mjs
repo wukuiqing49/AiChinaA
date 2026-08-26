@@ -11,7 +11,8 @@ if (!password || password.length < 8) {
   throw new Error("AUTH_PASSWORD must contain at least 8 characters.");
 }
 
-const iterations = 310_000;
+// Cloudflare Workers WebCrypto supports PBKDF2 iteration counts up to 100,000.
+const iterations = 100_000;
 const salt = randomBytes(16);
 const passwordHash = pbkdf2Sync(password, salt, iterations, 32, "sha256");
 console.log(JSON.stringify({

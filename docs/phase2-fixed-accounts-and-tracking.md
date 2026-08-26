@@ -33,8 +33,8 @@ Copy each JSON line into a JSON array. For example:
 
 ```json
 [
-  {"username":"owner","displayName":"Owner","salt":"...","passwordHash":"...","iterations":310000},
-  {"username":"member","displayName":"Member","salt":"...","passwordHash":"...","iterations":310000}
+  {"username":"owner","displayName":"Owner","salt":"...","passwordHash":"...","iterations":100000},
+  {"username":"member","displayName":"Member","salt":"...","passwordHash":"...","iterations":100000}
 ]
 ```
 
@@ -66,7 +66,7 @@ The workflow at `.github/workflows/deploy-worker.yml` deploys on a push to `main
 For local Worker development, create `.dev.vars` in `worker/` with test-only values:
 
 ```text
-FIXED_ACCOUNTS=[{"username":"owner","displayName":"Owner","salt":"...","passwordHash":"...","iterations":310000}]
+FIXED_ACCOUNTS=[{"username":"owner","displayName":"Owner","salt":"...","passwordHash":"...","iterations":100000}]
 SESSION_SECRET=local-development-only-secret
 ```
 

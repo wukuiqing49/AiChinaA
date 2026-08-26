@@ -133,7 +133,7 @@ Remove-Item Env:AUTH_PASSWORD
 命令会输出一行 JSON，例如：
 
 ```json
-{"username":"owner","displayName":"Owner","salt":"...","passwordHash":"...","iterations":310000}
+{"username":"owner","displayName":"Owner","salt":"...","passwordHash":"...","iterations":100000}
 ```
 
 如果需要多个账户，重复执行上面的命令，然后把多行 JSON 合并成一个数组：
@@ -145,14 +145,14 @@ Remove-Item Env:AUTH_PASSWORD
     "displayName": "Owner",
     "salt": "...",
     "passwordHash": "...",
-    "iterations": 310000
+    "iterations": 100000
   },
   {
     "username": "member",
     "displayName": "Member",
     "salt": "...",
     "passwordHash": "...",
-    "iterations": 310000
+    "iterations": 100000
   }
 ]
 ```
