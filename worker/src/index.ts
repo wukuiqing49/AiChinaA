@@ -212,8 +212,9 @@ const valuationPublishSchema = z.object({
   dataDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), source: z.string().min(1).max(80),
   rows: z.array(z.object({ code: z.string().regex(/^\d{6}$/), peTtm: z.number().nullable(), pb: z.number().nullable(), totalMarketCap: z.number().min(0).nullable(), floatMarketCap: z.number().min(0).nullable() })).min(1).max(6000),
 });
+const financialPublishSchema = z.object({ dataDate: z.string(), reportDate: z.string(), source: z.string().min(1), rows: z.array(z.object({ code: z.string().regex(/^\d{6}$/), announcementDate: z.string().nullable().optional(), roe: z.number().nullable(), revenueYoy: z.number().nullable(), profitYoy: z.number().nullable(), grossMargin: z.number().nullable(), debtRatio: z.number().nullable(), revenue: z.number().nullable(), netProfit: z.number().nullable() })).min(1).max(6000) });
 const ruleConditionSchema = z.object({
-  field: z.enum(["ret5d", "ret20d", "ret60d", "ret120d", "ret250d", "ma20Slope", "volumeRatio5", "volumeRatio20", "amount", "amountRatio5", "amountRatio20", "rsi14", "volatility20", "volatility60", "maxDrawdown60", "distanceHigh20", "distanceHigh60", "distanceHigh250", "distanceLow250", "pricePercentile250", "turnoverRate", "close", "score", "mainNetInflow", "mainNetInflowPct", "superLargeNetInflow", "largeNetInflow", "mediumNetInflow", "smallNetInflow", "mainNetInflow3d", "mainNetInflow5d", "mainNetInflow10d", "peTtm", "pb", "totalMarketCap", "floatMarketCap", "industry", "market"]),
+  field: z.enum(["ret5d", "ret20d", "ret60d", "ret120d", "ret250d", "ma20Slope", "volumeRatio5", "volumeRatio20", "amount", "amountRatio5", "amountRatio20", "rsi14", "volatility20", "volatility60", "maxDrawdown60", "distanceHigh20", "distanceHigh60", "distanceHigh250", "distanceLow250", "pricePercentile250", "turnoverRate", "close", "score", "mainNetInflow", "mainNetInflowPct", "superLargeNetInflow", "largeNetInflow", "mediumNetInflow", "smallNetInflow", "mainNetInflow3d", "mainNetInflow5d", "mainNetInflow10d", "peTtm", "pb", "totalMarketCap", "floatMarketCap", "roe", "revenueYoy", "profitYoy", "grossMargin", "debtRatio", "revenue", "netProfit", "industry", "market"]),
   op: z.enum([">", ">=", "<", "<=", "==", "!=", "contains"]),
   value: z.union([z.number().finite(), z.string().trim().min(1).max(80)]),
 });
@@ -269,6 +270,7 @@ app.post("/api/rule-screener", async (context) => {
     volumeRatio5: { sql: "d.volume_ratio_5", numeric: true }, volumeRatio20: { sql: "d.volume_ratio_20", numeric: true }, amount: { sql: "d.amount", numeric: true }, amountRatio5: { sql: "d.amount_ratio_5", numeric: true }, amountRatio20: { sql: "d.amount_ratio_20", numeric: true }, rsi14: { sql: "d.rsi_14", numeric: true }, volatility20: { sql: "d.volatility_20", numeric: true }, volatility60: { sql: "d.volatility_60", numeric: true }, maxDrawdown60: { sql: "d.max_drawdown_60", numeric: true }, distanceHigh20: { sql: "d.distance_high_20", numeric: true }, distanceHigh60: { sql: "d.distance_high_60", numeric: true }, distanceHigh250: { sql: "d.distance_high_250", numeric: true }, distanceLow250: { sql: "d.distance_low_250", numeric: true }, pricePercentile250: { sql: "d.price_percentile_250", numeric: true },
     mainNetInflow: { sql: "f.main_net_inflow", numeric: true }, mainNetInflowPct: { sql: "f.main_net_inflow_pct", numeric: true }, superLargeNetInflow: { sql: "f.super_large_net_inflow", numeric: true }, largeNetInflow: { sql: "f.large_net_inflow", numeric: true }, mediumNetInflow: { sql: "f.medium_net_inflow", numeric: true }, smallNetInflow: { sql: "f.small_net_inflow", numeric: true }, mainNetInflow3d: { sql: "f.main_net_inflow_3d", numeric: true }, mainNetInflow5d: { sql: "f.main_net_inflow_5d", numeric: true }, mainNetInflow10d: { sql: "f.main_net_inflow_10d", numeric: true },
     peTtm: { sql: "v.pe_ttm", numeric: true }, pb: { sql: "v.pb", numeric: true }, totalMarketCap: { sql: "v.total_market_cap", numeric: true }, floatMarketCap: { sql: "v.float_market_cap", numeric: true },
+    roe: { sql: "n.roe", numeric: true }, revenueYoy: { sql: "n.revenue_yoy", numeric: true }, profitYoy: { sql: "n.profit_yoy", numeric: true }, grossMargin: { sql: "n.gross_margin", numeric: true }, debtRatio: { sql: "n.debt_ratio", numeric: true }, revenue: { sql: "n.revenue", numeric: true }, netProfit: { sql: "n.net_profit", numeric: true },
     turnoverRate: { sql: "d.turnover_rate", numeric: true }, close: { sql: "s.close", numeric: true },
     score: { sql: "s.score_total", numeric: true }, industry: { sql: "d.industry", numeric: false },
     market: { sql: "d.market", numeric: false },
@@ -295,7 +297,7 @@ app.post("/api/rule-screener", async (context) => {
   const where = `WHERE ${query.logic === "AND" ? conditions.join(" AND ") : `(${conditions.slice(0, query.excludeSt ? 2 : 1).join(" AND ")}) AND (${conditions.slice(query.excludeSt ? 2 : 1).join(" OR ")})`}`;
   const orderColumn = { score: "s.score_total", price: "s.close", ret20: "d.ret_20d", turnover: "d.turnover_rate", volatility: "d.volatility_20" }[query.sortBy];
   const offset = (query.page - 1) * query.pageSize;
-  const baseSql = `FROM stock_latest s LEFT JOIN stock_screen_latest d ON d.code = s.code LEFT JOIN stock_money_flow_latest f ON f.code = s.code LEFT JOIN stock_valuation_latest v ON v.code = s.code ${where}`;
+  const baseSql = `FROM stock_latest s LEFT JOIN stock_screen_latest d ON d.code = s.code LEFT JOIN stock_money_flow_latest f ON f.code = s.code LEFT JOIN stock_valuation_latest v ON v.code = s.code LEFT JOIN stock_financial_latest n ON n.code = s.code ${where}`;
   const [rows, count] = await Promise.all([
     context.env.DB.prepare(
       `SELECT s.code, s.name, s.instrument_type, s.is_st, s.trade_date, s.quote_date, s.quote_time, s.quote_source,
@@ -498,6 +500,18 @@ app.post("/api/internal/publish-valuation", async (context) => {
   ).bind(row.code, dataDate, source, row.peTtm, row.pb, row.totalMarketCap, row.floatMarketCap, now, row.code));
   try { const allStatements = [...statements, ...dailyStatements]; for (let index = 0; index < allStatements.length; index += 100) await context.env.DB.batch(allStatements.slice(index, index + 100)); return context.json({ status: "completed", rowCount: rows.length, dataDate, source }); }
   catch (error) { return context.json({ error: error instanceof Error ? error.message.slice(0, 500) : "估值保存失败。" }, 500); }
+});
+
+app.post("/api/internal/publish-financials", async (context) => {
+  if (!context.env.PUBLISH_SECRET || !secretsEqual(context.req.header("X-Publish-Secret") ?? "", context.env.PUBLISH_SECRET)) return context.json({ error: "发布凭据无效。" }, 401);
+  const body = financialPublishSchema.safeParse(await context.req.json());
+  if (!body.success) return context.json({ error: "财务发布包格式无效。" }, 400);
+  const { dataDate, reportDate, source, rows } = body.data, now = new Date().toISOString();
+  const statements = rows.flatMap((r) => [
+    context.env.DB.prepare(`INSERT INTO stock_financial_latest (code,report_date,announcement_date,source,roe,revenue_yoy,profit_yoy,gross_margin,debt_ratio,revenue,net_profit,updated_at) SELECT ?,?,?,?,?,?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM stock_latest WHERE code=?) ON CONFLICT(code) DO UPDATE SET report_date=excluded.report_date,announcement_date=excluded.announcement_date,source=excluded.source,roe=excluded.roe,revenue_yoy=excluded.revenue_yoy,profit_yoy=excluded.profit_yoy,gross_margin=excluded.gross_margin,debt_ratio=excluded.debt_ratio,revenue=excluded.revenue,net_profit=excluded.net_profit,updated_at=excluded.updated_at`).bind(r.code,reportDate,r.announcementDate??null,source,r.roe,r.revenueYoy,r.profitYoy,r.grossMargin,r.debtRatio,r.revenue,r.netProfit,now,r.code),
+    context.env.DB.prepare(`INSERT INTO stock_financial_daily (code,data_date,report_date,announcement_date,source,roe,revenue_yoy,profit_yoy,gross_margin,debt_ratio,revenue,net_profit,fetched_at) SELECT ?,?,?,?,?,?,?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM stock_latest WHERE code=?) ON CONFLICT(code,data_date,report_date) DO UPDATE SET announcement_date=excluded.announcement_date,source=excluded.source,roe=excluded.roe,revenue_yoy=excluded.revenue_yoy,profit_yoy=excluded.profit_yoy,gross_margin=excluded.gross_margin,debt_ratio=excluded.debt_ratio,revenue=excluded.revenue,net_profit=excluded.net_profit,fetched_at=excluded.fetched_at`).bind(r.code,dataDate,reportDate,r.announcementDate??null,source,r.roe,r.revenueYoy,r.profitYoy,r.grossMargin,r.debtRatio,r.revenue,r.netProfit,now,r.code),
+  ]);
+  try { for (let i=0;i<statements.length;i+=100) await context.env.DB.batch(statements.slice(i,i+100)); return context.json({status:"completed",rowCount:rows.length,reportDate}); } catch (error) { return context.json({error:error instanceof Error ? error.message.slice(0,500) : "财务保存失败。"},500); }
 });
 
 app.post("/api/auth/login", async (context) => {
