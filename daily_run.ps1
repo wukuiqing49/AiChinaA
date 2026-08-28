@@ -45,23 +45,27 @@ if (-not (Test-Path $python)) {
     throw "Python environment is missing: $python"
 }
 
-Invoke-PipelineStep "1/4 Refresh instrument names" @(
+Invoke-PipelineStep "1/5 Refresh instrument names" @(
     "-m", "pipeline.jobs.download_history", "--data-dir", "data/historical", "--repair-names"
 )
 
 if (-not $SkipDownload) {
-    Invoke-PipelineStep "2/4 Download incremental history" @(
+    Invoke-PipelineStep "2/5 Download incremental history" @(
         "-m", "pipeline.jobs.download_history", "--data-dir", "data/historical",
         "--incremental", "--workers", $Workers
     )
 }
 
-Invoke-PipelineStep "3/4 Build screener package" @(
+Invoke-PipelineStep "3/5 Fetch real-time market snapshot" @(
+    "-m", "pipeline.jobs.fetch_realtime_quotes", "--data-dir", "data/historical"
+)
+
+Invoke-PipelineStep "4/5 Build screener package" @(
     "-m", "pipeline.jobs.build_screener", "--data-dir", "data/historical",
     "--output", "reports/screener-publish.json", "--workers", $Workers
 )
 
-Invoke-PipelineStep "4/4 Publish to Worker" @(
+Invoke-PipelineStep "5/5 Publish to Worker" @(
     "-m", "pipeline.jobs.publish_screener", "--input", "reports/screener-publish.json"
 )
 

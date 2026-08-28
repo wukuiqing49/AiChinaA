@@ -31,6 +31,10 @@ function formatPercent(value: number | null): string {
   return value === null ? "-" : `${value >= 0 ? "+" : ""}${value.toFixed(2)}%`;
 }
 
+function marketDate(item: Pick<ScreenerItem | MarketIndexItem, "quoteDate" | "tradeDate">): string {
+  return item.quoteDate ?? item.tradeDate;
+}
+
 function exportToCsv(items: ScreenerItem[], filename = "量化选股数据.csv") {
   const headers = ["代码", "名称", "市场", "行业", "最新收盘价", "20日涨跌幅(%)", "换手率(%)", "20日年化波动率", "综合量化得分", "数据基准日"];
   const rows = items.map((item) => [
@@ -43,7 +47,7 @@ function exportToCsv(items: ScreenerItem[], filename = "量化选股数据.csv")
     item.turnoverRate ?? "",
     item.volatility20 ?? "",
     item.score ?? "",
-    item.tradeDate,
+    marketDate(item),
   ]);
   const csvContent = "\uFEFF" + [headers.join(","), ...rows.map((r) => r.map((c) => `"${c}"`).join(","))].join("\n");
   const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
@@ -59,8 +63,8 @@ function exportToCsv(items: ScreenerItem[], filename = "量化选股数据.csv")
 function MarketIndexOverview({ items }: { items: MarketIndexItem[] }) {
   if (!items.length) return null;
   const newestTradeDate = items.reduce(
-    (latest, item) => (item.tradeDate > latest ? item.tradeDate : latest),
-    items[0].tradeDate,
+    (latest, item) => (marketDate(item) > latest ? marketDate(item) : latest),
+    marketDate(items[0]),
   );
   const staleThreshold = new Date(`${newestTradeDate}T00:00:00Z`).getTime() - 3 * 24 * 60 * 60 * 1000;
   return (
@@ -70,19 +74,22 @@ function MarketIndexOverview({ items }: { items: MarketIndexItem[] }) {
         <span>Benchmark performance</span>
       </div>
       <div className="market-index-grid">
-        {items.map((item) => (
-          <div key={item.code} className="market-index-card">
+        {items.map((item) => {
+          const displayDate = marketDate(item);
+          const isStale = new Date(`${displayDate}T00:00:00Z`).getTime() < staleThreshold;
+          const isHistoryStale = new Date(`${item.tradeDate}T00:00:00Z`).getTime() < staleThreshold;
+          return <div key={item.code} className="market-index-card">
             <span className="market-index-name">{item.name}</span>
             <strong>{formatNumber(item.close)}</strong>
             <span className={item.pctChange !== null && item.pctChange < 0 ? "negative" : "positive"}>
               {formatPercent(item.pctChange)}
             </span>
             <small>20d {formatPercent(item.ret20d)}</small>
-            <small className={new Date(`${item.tradeDate}T00:00:00Z`).getTime() < staleThreshold ? "index-date stale" : "index-date"}>
-              As of {item.tradeDate}{new Date(`${item.tradeDate}T00:00:00Z`).getTime() < staleThreshold ? " (stale)" : ""}
+            <small className={isStale || isHistoryStale ? "index-date stale" : "index-date"} title={`Historical factors: ${item.tradeDate}`}>
+              As of {displayDate}{item.quoteTime ? ` ${item.quoteTime}` : ""}{isStale ? " (quote stale)" : ""}{isHistoryStale ? ` (history ${item.tradeDate} stale)` : ""}
             </small>
-          </div>
-        ))}
+          </div>;
+        })}
       </div>
     </section>
   );
@@ -576,6 +583,8 @@ export default function App() {
                     name: w.name,
                     instrumentType: "stock",
                     tradeDate: w.latestTradeDate,
+                    quoteDate: null,
+                    quoteTime: null,
                     close: w.latestClose,
                     score: w.scoreTotal,
                     dataCompleteness: 1,
@@ -761,7 +770,9 @@ function ScreenerTable({
                 <span className="score-badge">{formatNumber(item.score, 1)}</span>
                 <small>{item.dataCompleteness === null ? "-" : `${(item.dataCompleteness * 100).toFixed(0)}% 完整`}</small>
               </td>
-              <td>{item.tradeDate}</td>
+              <td title={`历史指标基准日: ${item.tradeDate}`}>
+                {marketDate(item)}{item.quoteTime ? <small>{item.quoteTime}</small> : null}
+              </td>
               <td onClick={(e) => e.stopPropagation()}>
                 <div className="row-actions">
                   <button className="small-button secondary-button" onClick={() => onOpenFull(item)}>
@@ -999,6 +1010,8 @@ function RecommendationsView({
           name: r.name,
           instrumentType: r.code.startsWith("5") || r.code.startsWith("1") ? "etf" : "stock",
           tradeDate: r.latestTradeDate,
+          quoteDate: null,
+          quoteTime: null,
           close: r.latestClose,
           score: r.score,
           dataCompleteness: 1,
@@ -1323,6 +1336,9 @@ function StockDetailPage({
               <span className="tag market-tag">{stock.market === "SH" ? "上海证券交易所" : "深圳证券交易所"}</span>
               <span className="tag industry-tag">{stock.industry || "主板 / ETF 标的"}</span>
               <span className="tag date-tag">基准日: {stock.tradeDate}</span>
+              {stock.quoteDate && (
+                <span className="tag date-tag">行情日: {marketDate(stock)}{stock.quoteTime ? ` ${stock.quoteTime}` : ""}</span>
+              )}
             </div>
           </div>
           <div className="header-controls">

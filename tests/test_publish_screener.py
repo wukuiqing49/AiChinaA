@@ -21,6 +21,8 @@ def test_load_payload_accepts_valid_row(tmp_path):
         "name": "Alpha",
         "instrumentType": "stock",
         "tradeDate": "2026-08-25",
+        "quoteDate": None,
+        "quoteTime": None,
         "close": 10,
         "scoreTotal": 80,
         "dataCompleteness": 1, "market": "SH", "industry": "Test", "pctChange": 1,

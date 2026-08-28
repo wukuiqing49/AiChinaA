@@ -5,7 +5,7 @@ import json
 import math
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -145,6 +145,8 @@ def _build_index_payload(data_dir: Path) -> list[dict[str, object]]:
                 "code": code,
                 "name": names.get(code, code),
                 "tradeDate": str(item["trade_date"]),
+                "quoteDate": None,
+                "quoteTime": None,
                 "close": _json_value(item.get("close_quote", item.get("close"))),
                 "pctChange": _json_value(item.get("pct_change_quote", item.get("pct_change"))),
                 "ret20d": _json_value(item.get("ret_20d")),
@@ -238,6 +240,8 @@ def build_payload(
             "name": str(item.get("name") or code),
             "instrumentType": str(item.get("instrument_type") or classify_instrument(code)),
             "tradeDate": str(item["trade_date"]),
+            "quoteDate": None,
+            "quoteTime": None,
             "close": (
                 item.get("close_quote")
                 if item.get("close_quote") is not None
@@ -285,6 +289,56 @@ def _json_value(value: object) -> object:
     return value
 
 
+def _apply_realtime_quotes(
+    payload: dict[str, object], quote_file: Path, *, now: datetime | None = None
+) -> None:
+    try:
+        snapshot = json.loads(quote_file.read_text(encoding="utf-8"))
+        generated_at = datetime.fromisoformat(snapshot["generatedAt"].replace("Z", "+00:00"))
+        quotes = snapshot.get("quotes", {})
+    except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
+        return
+    current = now or datetime.now(UTC)
+    if generated_at.tzinfo is None:
+        generated_at = generated_at.replace(tzinfo=UTC)
+    age = current.astimezone(UTC) - generated_at.astimezone(UTC)
+    if age < -timedelta(minutes=5) or age > timedelta(hours=18):
+        return
+
+    collections = (
+        (payload.get("stocks", []), False),
+        (payload.get("indices", []), True),
+    )
+    for collection, is_index in collections:
+        if not isinstance(collection, list):
+            continue
+        for row in collection:
+            if not isinstance(row, dict):
+                continue
+            kind = "index" if is_index else row.get("instrumentType")
+            quote = quotes.get(f"{kind}:{row.get('code')}")
+            if (
+                not isinstance(quote, dict)
+                or quote.get("quoteDate", "") < row.get("tradeDate", "")
+            ):
+                continue
+            row["close"] = quote.get("close")
+            row["pctChange"] = quote.get("pctChange")
+            row["quoteDate"] = quote.get("quoteDate")
+            row["quoteTime"] = quote.get("quoteTime")
+            if is_index:
+                try:
+                    history_lag = (
+                        date.fromisoformat(str(row["quoteDate"]))
+                        - date.fromisoformat(str(row["tradeDate"]))
+                    ).days
+                except ValueError:
+                    history_lag = 0
+                if history_lag > 7:
+                    for field in ("ret20d", "ma20Slope", "volatility20"):
+                        row[field] = None
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Build the JSON package consumed by the screener publisher."
@@ -314,6 +368,7 @@ def main() -> int:
     )
     if isinstance(provider, LocalHistoryProvider):
         payload["indices"] = _build_index_payload(args.data_dir)
+        _apply_realtime_quotes(payload, args.data_dir.parent / "realtime" / "tencent-quotes.json")
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(
         json.dumps(payload, ensure_ascii=False, allow_nan=False), encoding="utf-8"

@@ -48,6 +48,8 @@ export interface ScreenerItem {
   name: string;
   instrumentType: "stock" | "etf";
   tradeDate: string;
+  quoteDate: string | null;
+  quoteTime: string | null;
   close: number | null;
   score: number | null;
   dataCompleteness: number | null;
@@ -67,6 +69,8 @@ export interface MarketIndexItem {
   code: string;
   name: string;
   tradeDate: string;
+  quoteDate: string | null;
+  quoteTime: string | null;
   close: number | null;
   pctChange: number | null;
   ret20d: number | null;

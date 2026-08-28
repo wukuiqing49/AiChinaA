@@ -12,6 +12,8 @@ REQUIRED_STOCK_FIELDS = {
     "name",
     "instrumentType",
     "tradeDate",
+    "quoteDate",
+    "quoteTime",
     "close",
     "scoreTotal",
     "dataCompleteness",

@@ -46,6 +46,8 @@ const screenerPublishSchema = z.object({
     name: z.string().min(1).max(80),
     instrumentType: z.enum(["stock", "etf"]),
     tradeDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    quoteDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable(),
+    quoteTime: z.string().regex(/^\d{2}:\d{2}:\d{2}$/).nullable(),
     close: z.number().positive().nullable(),
     scoreTotal: z.number().min(0).max(100).nullable(),
     dataCompleteness: z.number().min(0).max(1).nullable(),
@@ -64,6 +66,8 @@ const screenerPublishSchema = z.object({
     code: z.string().min(6).max(12),
     name: z.string().min(1).max(80),
     tradeDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    quoteDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable(),
+    quoteTime: z.string().regex(/^\d{2}:\d{2}:\d{2}$/).nullable(),
     close: z.number().positive().nullable(),
     pctChange: z.number().nullable(),
     ret20d: z.number().nullable(),
@@ -131,7 +135,8 @@ app.get("/api/screener", async (context) => {
      ${where}`;
   const [rows, count, asOf] = await Promise.all([
     context.env.DB.prepare(
-      `SELECT s.code, s.name, s.instrument_type, s.trade_date, s.close, s.score_total, s.data_completeness,
+      `SELECT s.code, s.name, s.instrument_type, s.trade_date, s.quote_date, s.quote_time,
+              s.close, s.score_total, s.data_completeness,
               d.market, d.industry, d.pct_change, d.turnover_rate, d.ret_5d, d.ret_20d,
               d.ret_60d, d.ma20_slope, d.volume_ratio_20, d.volatility_20
          ${baseSql}
@@ -139,7 +144,9 @@ app.get("/api/screener", async (context) => {
         LIMIT ? OFFSET ?`,
     ).bind(...bindings, query.pageSize, offset).all<ScreenerRow>(),
     context.env.DB.prepare(`SELECT COUNT(*) AS total ${baseSql}`).bind(...bindings).first<{ total: number }>(),
-    context.env.DB.prepare("SELECT MAX(trade_date) AS trade_date FROM sync_runs WHERE status = 'completed'").first<{ trade_date: string | null }>(),
+    context.env.DB.prepare(
+      "SELECT MAX(COALESCE(quote_date, trade_date)) AS trade_date FROM stock_latest",
+    ).first<{ trade_date: string | null }>(),
   ]);
   return context.json({
     items: rows.results.map(toScreenerItem),
@@ -152,7 +159,8 @@ app.get("/api/screener", async (context) => {
 
 app.get("/api/market-indices", async (context) => {
   const rows = await context.env.DB.prepare(
-    `SELECT code, name, trade_date, close, pct_change, ret_20d, ma20_slope, volatility_20
+    `SELECT code, name, trade_date, quote_date, quote_time, close, pct_change,
+            ret_20d, ma20_slope, volatility_20
        FROM market_index_latest
       ORDER BY code ASC`,
   ).all<MarketIndexRow>();
@@ -232,12 +240,15 @@ app.post("/api/internal/publish-screener", async (context) => {
     const statements = [
       ...stocks.flatMap((stock) => [
       context.env.DB.prepare(
-        `INSERT INTO stock_latest (code, name, instrument_type, trade_date, close, score_total, data_completeness, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO stock_latest (
+           code, name, instrument_type, trade_date, quote_date, quote_time, close,
+           score_total, data_completeness, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(code) DO UPDATE SET name = excluded.name, instrument_type = excluded.instrument_type, trade_date = excluded.trade_date,
+           quote_date = excluded.quote_date, quote_time = excluded.quote_time,
            close = excluded.close, score_total = excluded.score_total,
            data_completeness = excluded.data_completeness, updated_at = excluded.updated_at`,
-      ).bind(stock.code, stock.name, stock.instrumentType, stock.tradeDate, stock.close, stock.scoreTotal, stock.dataCompleteness, startedAt),
+      ).bind(stock.code, stock.name, stock.instrumentType, stock.tradeDate, stock.quoteDate, stock.quoteTime, stock.close, stock.scoreTotal, stock.dataCompleteness, startedAt),
       context.env.DB.prepare(
         `INSERT INTO stock_screen_latest (
            code, trade_date, market, industry, pct_change, turnover_rate, ret_5d, ret_20d,
@@ -252,12 +263,14 @@ app.post("/api/internal/publish-screener", async (context) => {
       ]),
       ...indices.map((index) => context.env.DB.prepare(
         `INSERT INTO market_index_latest (
-           code, name, trade_date, close, pct_change, ret_20d, ma20_slope, volatility_20, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+           code, name, trade_date, quote_date, quote_time, close, pct_change,
+           ret_20d, ma20_slope, volatility_20, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(code) DO UPDATE SET name = excluded.name, trade_date = excluded.trade_date,
+           quote_date = excluded.quote_date, quote_time = excluded.quote_time,
            close = excluded.close, pct_change = excluded.pct_change, ret_20d = excluded.ret_20d,
            ma20_slope = excluded.ma20_slope, volatility_20 = excluded.volatility_20, updated_at = excluded.updated_at`,
-      ).bind(index.code, index.name, index.tradeDate, index.close, index.pctChange, index.ret20d, index.ma20Slope, index.volatility20, startedAt)),
+      ).bind(index.code, index.name, index.tradeDate, index.quoteDate, index.quoteTime, index.close, index.pctChange, index.ret20d, index.ma20Slope, index.volatility20, startedAt)),
     ];
     for (let index = 0; index < statements.length; index += 100) {
       await context.env.DB.batch(statements.slice(index, index + 100));
@@ -472,6 +485,8 @@ interface ScreenerRow {
   name: string;
   instrument_type: "stock" | "etf";
   trade_date: string;
+  quote_date: string | null;
+  quote_time: string | null;
   close: number | null;
   score_total: number | null;
   data_completeness: number | null;
@@ -511,6 +526,8 @@ interface MarketIndexRow {
   code: string;
   name: string;
   trade_date: string;
+  quote_date: string | null;
+  quote_time: string | null;
   close: number | null;
   pct_change: number | null;
   ret_20d: number | null;
@@ -541,6 +558,8 @@ function toScreenerItem(row: ScreenerRow) {
     name: row.name,
     instrumentType: row.instrument_type,
     tradeDate: row.trade_date,
+    quoteDate: row.quote_date,
+    quoteTime: row.quote_time,
     close: row.close,
     score: row.score_total,
     dataCompleteness: row.data_completeness,
@@ -562,6 +581,8 @@ function toMarketIndexItem(row: MarketIndexRow) {
     code: row.code,
     name: row.name,
     tradeDate: row.trade_date,
+    quoteDate: row.quote_date,
+    quoteTime: row.quote_time,
     close: row.close,
     pctChange: row.pct_change,
     ret20d: row.ret_20d,

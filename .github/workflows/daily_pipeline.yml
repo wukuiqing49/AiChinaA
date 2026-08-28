@@ -64,6 +64,10 @@ jobs:
             python -m pipeline.jobs.download_history --incremental --workers 2
           fi
 
+      - name: Fetch real-time market snapshot
+        run: |
+          python -m pipeline.jobs.fetch_realtime_quotes --data-dir data/historical
+
       - name: Compute Screener & Multi-Factor Scores
         run: |
           python -m pipeline.jobs.build_screener --data-dir data/historical --output reports/screener-publish.json
