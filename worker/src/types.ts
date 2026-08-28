@@ -3,6 +3,12 @@ export interface Env {
   FIXED_ACCOUNTS: string;
   SESSION_SECRET: string;
   PUBLISH_SECRET: string;
+  ADMIN_USERNAMES: string;
+  GITHUB_ACTIONS_TOKEN: string;
+  REFRESH_CALLBACK_SECRET: string;
+  GITHUB_OWNER: string;
+  GITHUB_REPOSITORY: string;
+  GITHUB_WORKFLOW: string;
 }
 
 export interface SessionUser {

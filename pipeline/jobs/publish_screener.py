@@ -10,6 +10,8 @@ from urllib.request import Request, urlopen
 REQUIRED_STOCK_FIELDS = {
     "code",
     "name",
+    "instrumentType",
+    "tradeDate",
     "close",
     "scoreTotal",
     "dataCompleteness",
@@ -38,6 +40,9 @@ def load_payload(path: Path) -> dict[str, object]:
     for index, stock in enumerate(stocks):
         if not isinstance(stock, dict) or not REQUIRED_STOCK_FIELDS.issubset(stock):
             raise ValueError(f"stock row {index} is missing required fields")
+    indices = payload.get("indices", [])
+    if not isinstance(indices, list) or len(indices) > 100:
+        raise ValueError("publish payload indices must contain 0-100 rows")
     return payload
 
 

@@ -13,9 +13,17 @@ const loginSchema = z.object({
   username: z.string().regex(/^[A-Za-z0-9._-]{3,32}$/),
   password: z.string().min(8).max(256),
 });
+const refreshCallbackSchema = z.object({
+  id: z.string().uuid(),
+  status: z.enum(["running", "completed", "failed"]),
+  tradeDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  rowCount: z.number().int().min(0).optional(),
+  error: z.string().max(500).optional(),
+});
 const screenerQuerySchema = z.object({
   code: z.string().regex(/^\d{1,6}$/).optional(),
   name: z.string().trim().max(40).optional(),
+  instrumentType: z.enum(["stock", "etf"]).optional(),
   market: z.enum(["SH", "SZ", "BJ"]).optional(),
   industry: z.string().trim().max(80).optional(),
   minPrice: z.coerce.number().finite().min(0).optional(),
@@ -36,6 +44,8 @@ const screenerPublishSchema = z.object({
   stocks: z.array(z.object({
     code: z.string().regex(/^\d{6}$/),
     name: z.string().min(1).max(80),
+    instrumentType: z.enum(["stock", "etf"]),
+    tradeDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
     close: z.number().positive().nullable(),
     scoreTotal: z.number().min(0).max(100).nullable(),
     dataCompleteness: z.number().min(0).max(1).nullable(),
@@ -50,6 +60,16 @@ const screenerPublishSchema = z.object({
     volumeRatio20: z.number().min(0).nullable(),
     volatility20: z.number().min(0).nullable(),
   })).min(1).max(6000),
+  indices: z.array(z.object({
+    code: z.string().min(6).max(12),
+    name: z.string().min(1).max(80),
+    tradeDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    close: z.number().positive().nullable(),
+    pctChange: z.number().nullable(),
+    ret20d: z.number().nullable(),
+    ma20Slope: z.number().nullable(),
+    volatility20: z.number().min(0).nullable(),
+  })).max(100).default([]),
 });
 
 app.get("/api/health", (context) => context.json({ status: "ok" }));
@@ -69,6 +89,10 @@ app.get("/api/screener", async (context) => {
   if (query.name) {
     conditions.push("s.name LIKE ?");
     bindings.push(`%${query.name}%`);
+  }
+  if (query.instrumentType) {
+    conditions.push("s.instrument_type = ?");
+    bindings.push(query.instrumentType);
   }
   if (query.market) {
     conditions.push("d.market = ?");
@@ -109,7 +133,7 @@ app.get("/api/screener", async (context) => {
     ${where}`;
   const [rows, count, asOf] = await Promise.all([
     context.env.DB.prepare(
-      `SELECT s.code, s.name, s.trade_date, s.close, s.score_total, s.data_completeness,
+      `SELECT s.code, s.name, s.instrument_type, s.trade_date, s.close, s.score_total, s.data_completeness,
               d.market, d.industry, d.pct_change, d.turnover_rate, d.ret_5d, d.ret_20d,
               d.ret_60d, d.ma20_slope, d.volume_ratio_20, d.volatility_20
          ${baseSql}
@@ -128,6 +152,65 @@ app.get("/api/screener", async (context) => {
   });
 });
 
+app.get("/api/market-indices", async (context) => {
+  const rows = await context.env.DB.prepare(
+    `SELECT code, name, trade_date, close, pct_change, ret_20d, ma20_slope, volatility_20
+       FROM market_index_latest
+      ORDER BY code ASC`,
+  ).all<MarketIndexRow>();
+  return context.json({ items: rows.results.map(toMarketIndexItem) });
+});
+
+app.get("/api/data-refresh", async (context) => {
+  const latest = await context.env.DB.prepare(
+    `SELECT id, status, requested_by, requested_at, started_at, completed_at, trade_date, row_count, error_message
+       FROM data_refresh_runs ORDER BY requested_at DESC LIMIT 1`,
+  ).first<DataRefreshRow>();
+  return context.json({ refresh: latest ? toDataRefresh(latest) : null });
+});
+
+app.post("/api/data-refresh", async (context) => {
+  const user = await requireUser(context);
+  if (user instanceof Response) return user;
+  if (!isAdmin(user, context.env)) return context.json({ error: "Administrator access is required." }, 403);
+  if (!context.env.GITHUB_ACTIONS_TOKEN) return context.json({ error: "Cloud update is not configured." }, 503);
+
+  const active = await context.env.DB.prepare(
+    "SELECT id FROM data_refresh_runs WHERE status IN ('queued', 'running') ORDER BY requested_at DESC LIMIT 1",
+  ).first<{ id: string }>();
+  if (active) return context.json({ error: "An update is already running.", id: active.id }, 409);
+
+  const id = crypto.randomUUID();
+  const requestedAt = new Date().toISOString();
+  await context.env.DB.prepare(
+    "INSERT INTO data_refresh_runs (id, status, requested_by, requested_at) VALUES (?, 'queued', ?, ?)",
+  ).bind(id, user.username, requestedAt).run();
+  const response = await fetch(
+    `https://api.github.com/repos/${context.env.GITHUB_OWNER}/${context.env.GITHUB_REPOSITORY}/actions/workflows/${context.env.GITHUB_WORKFLOW}/dispatches`,
+    { method: "POST", headers: { Accept: "application/vnd.github+json", Authorization: `Bearer ${context.env.GITHUB_ACTIONS_TOKEN}`, "User-Agent": "a-share-quant-app" }, body: JSON.stringify({ ref: "main", inputs: { refresh_id: id } }) },
+  );
+  if (!response.ok) {
+    await context.env.DB.prepare("UPDATE data_refresh_runs SET status = 'failed', completed_at = ?, error_message = ? WHERE id = ?")
+      .bind(new Date().toISOString(), `GitHub dispatch failed (${response.status}).`, id).run();
+    return context.json({ error: "Could not start the cloud update." }, 502);
+  }
+  return context.json({ refresh: { id, status: "queued", requestedBy: user.username, requestedAt } }, 202);
+});
+
+app.post("/api/internal/data-refresh-callback", async (context) => {
+  if (!context.env.REFRESH_CALLBACK_SECRET || !secretsEqual(context.req.header("X-Refresh-Secret") ?? "", context.env.REFRESH_CALLBACK_SECRET)) return context.json({ error: "Invalid callback credentials." }, 401);
+  const body = refreshCallbackSchema.safeParse(await context.req.json());
+  if (!body.success) return context.json({ error: "Invalid refresh callback." }, 400);
+  const now = new Date().toISOString();
+  const { id, status, tradeDate, rowCount, error } = body.data;
+  await context.env.DB.prepare(
+    `UPDATE data_refresh_runs SET status = ?, started_at = CASE WHEN ? = 'running' THEN ? ELSE started_at END,
+     completed_at = CASE WHEN ? IN ('completed', 'failed') THEN ? ELSE completed_at END,
+     trade_date = COALESCE(?, trade_date), row_count = COALESCE(?, row_count), error_message = ? WHERE id = ?`,
+  ).bind(status, status, now, status, now, tradeDate ?? null, rowCount ?? null, error ?? null, id).run();
+  return context.json({ id, status });
+});
+
 app.post("/api/internal/publish-screener", async (context) => {
   if (!context.env.PUBLISH_SECRET || !secretsEqual(context.req.header("X-Publish-Secret") ?? "", context.env.PUBLISH_SECRET)) {
     return context.json({ error: "发布凭据无效。" }, 401);
@@ -136,7 +219,7 @@ app.post("/api/internal/publish-screener", async (context) => {
   if (!body.success) {
     return context.json({ error: "筛选发布包格式无效。", details: body.error.flatten() }, 400);
   }
-  const { runId, tradeDate, stocks } = body.data;
+  const { runId, tradeDate, stocks, indices } = body.data;
   const startedAt = new Date().toISOString();
   const existing = await context.env.DB.prepare("SELECT status, row_count FROM sync_runs WHERE run_id = ?").bind(runId).first<{ status: string; row_count: number }>();
   if (existing?.status === "completed") {
@@ -148,14 +231,15 @@ app.post("/api/internal/publish-screener", async (context) => {
      ON CONFLICT(run_id) DO UPDATE SET status = 'running', error_message = NULL, started_at = excluded.started_at`,
   ).bind(runId, tradeDate, startedAt).run();
   try {
-    const statements = stocks.flatMap((stock) => [
+    const statements = [
+      ...stocks.flatMap((stock) => [
       context.env.DB.prepare(
-        `INSERT INTO stock_latest (code, name, trade_date, close, score_total, data_completeness, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(code) DO UPDATE SET name = excluded.name, trade_date = excluded.trade_date,
+        `INSERT INTO stock_latest (code, name, instrument_type, trade_date, close, score_total, data_completeness, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(code) DO UPDATE SET name = excluded.name, instrument_type = excluded.instrument_type, trade_date = excluded.trade_date,
            close = excluded.close, score_total = excluded.score_total,
            data_completeness = excluded.data_completeness, updated_at = excluded.updated_at`,
-      ).bind(stock.code, stock.name, tradeDate, stock.close, stock.scoreTotal, stock.dataCompleteness, startedAt),
+      ).bind(stock.code, stock.name, stock.instrumentType, stock.tradeDate, stock.close, stock.scoreTotal, stock.dataCompleteness, startedAt),
       context.env.DB.prepare(
         `INSERT INTO stock_screen_latest (
            code, trade_date, market, industry, pct_change, turnover_rate, ret_5d, ret_20d,
@@ -166,8 +250,17 @@ app.post("/api/internal/publish-screener", async (context) => {
            ret_5d = excluded.ret_5d, ret_20d = excluded.ret_20d, ret_60d = excluded.ret_60d,
            ma20_slope = excluded.ma20_slope, volume_ratio_20 = excluded.volume_ratio_20,
            volatility_20 = excluded.volatility_20, updated_at = excluded.updated_at`,
-      ).bind(stock.code, tradeDate, stock.market, stock.industry, stock.pctChange, stock.turnoverRate, stock.ret5d, stock.ret20d, stock.ret60d, stock.ma20Slope, stock.volumeRatio20, stock.volatility20, startedAt),
-    ]);
+      ).bind(stock.code, stock.tradeDate, stock.market, stock.industry, stock.pctChange, stock.turnoverRate, stock.ret5d, stock.ret20d, stock.ret60d, stock.ma20Slope, stock.volumeRatio20, stock.volatility20, startedAt),
+      ]),
+      ...indices.map((index) => context.env.DB.prepare(
+        `INSERT INTO market_index_latest (
+           code, name, trade_date, close, pct_change, ret_20d, ma20_slope, volatility_20, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(code) DO UPDATE SET name = excluded.name, trade_date = excluded.trade_date,
+           close = excluded.close, pct_change = excluded.pct_change, ret_20d = excluded.ret_20d,
+           ma20_slope = excluded.ma20_slope, volatility_20 = excluded.volatility_20, updated_at = excluded.updated_at`,
+      ).bind(index.code, index.name, index.tradeDate, index.close, index.pctChange, index.ret20d, index.ma20Slope, index.volatility20, startedAt)),
+    ];
     for (let index = 0; index < statements.length; index += 100) {
       await context.env.DB.batch(statements.slice(index, index + 100));
     }
@@ -196,7 +289,7 @@ app.post("/api/auth/login", async (context) => {
       secure: new URL(context.req.url).protocol === "https:",
       maxAge: 60 * 60 * 24 * 7,
     });
-    return context.json({ user: publicUser(user) });
+    return context.json({ user: publicUser(user, context.env) });
   } catch (error) {
     return authError(context, error);
   }
@@ -212,7 +305,7 @@ app.get("/api/me", async (context) => {
   if (user instanceof Response) {
     return user;
   }
-  return context.json({ user: publicUser(user) });
+  return context.json({ user: publicUser(user, context.env) });
 });
 
 app.get("/api/watchlist", async (context) => {
@@ -361,8 +454,12 @@ async function requireUser(context: AppContext): Promise<SessionUser | Response>
   }
 }
 
-function publicUser(user: SessionUser) {
-  return { username: user.username, displayName: user.displayName };
+function publicUser(user: SessionUser, env: Env) {
+  return { username: user.username, displayName: user.displayName, isAdmin: isAdmin(user, env) };
+}
+
+function isAdmin(user: SessionUser, env: Env): boolean {
+  return (env.ADMIN_USERNAMES ?? "").split(",").map((name) => name.trim()).includes(user.username);
 }
 
 function authError(context: AppContext, error: unknown) {
@@ -375,6 +472,7 @@ function authError(context: AppContext, error: unknown) {
 interface ScreenerRow {
   code: string;
   name: string;
+  instrument_type: "stock" | "etf";
   trade_date: string;
   close: number | null;
   score_total: number | null;
@@ -388,6 +486,37 @@ interface ScreenerRow {
   ret_60d: number | null;
   ma20_slope: number | null;
   volume_ratio_20: number | null;
+  volatility_20: number | null;
+}
+
+interface DataRefreshRow {
+  id: string;
+  status: "queued" | "running" | "completed" | "failed";
+  requested_by: string | null;
+  requested_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  trade_date: string | null;
+  row_count: number | null;
+  error_message: string | null;
+}
+
+function toDataRefresh(row: DataRefreshRow) {
+  return {
+    id: row.id, status: row.status, requestedBy: row.requested_by, requestedAt: row.requested_at,
+    startedAt: row.started_at, completedAt: row.completed_at, tradeDate: row.trade_date,
+    rowCount: row.row_count, error: row.error_message,
+  };
+}
+
+interface MarketIndexRow {
+  code: string;
+  name: string;
+  trade_date: string;
+  close: number | null;
+  pct_change: number | null;
+  ret_20d: number | null;
+  ma20_slope: number | null;
   volatility_20: number | null;
 }
 
@@ -412,6 +541,7 @@ function toScreenerItem(row: ScreenerRow) {
   return {
     code: row.code,
     name: row.name,
+    instrumentType: row.instrument_type,
     tradeDate: row.trade_date,
     close: row.close,
     score: row.score_total,
@@ -425,6 +555,19 @@ function toScreenerItem(row: ScreenerRow) {
     ret60d: row.ret_60d,
     ma20Slope: row.ma20_slope,
     volumeRatio20: row.volume_ratio_20,
+    volatility20: row.volatility_20,
+  };
+}
+
+function toMarketIndexItem(row: MarketIndexRow) {
+  return {
+    code: row.code,
+    name: row.name,
+    tradeDate: row.trade_date,
+    close: row.close,
+    pctChange: row.pct_change,
+    ret20d: row.ret_20d,
+    ma20Slope: row.ma20_slope,
     volatility20: row.volatility_20,
   };
 }

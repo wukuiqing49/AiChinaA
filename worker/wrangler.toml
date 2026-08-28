@@ -2,6 +2,11 @@ name = "a-share-quant-app"
 main = "src/index.ts"
 compatibility_date = "2026-08-26"
 
+[vars]
+GITHUB_OWNER = "wukuiqing49"
+GITHUB_REPOSITORY = "AiChinaA"
+GITHUB_WORKFLOW = "daily_pipeline.yml"
+
 [[d1_databases]]
 binding = "DB"
 database_name = "quant-core"

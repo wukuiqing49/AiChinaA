@@ -1,0 +1,89 @@
+name: Daily A-Share Quant Pipeline
+
+on:
+  schedule:
+    # Runs at 15:35 Beijing Time (07:35 UTC) Monday through Friday
+    - cron: '35 7 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      refresh_id:
+        description: Worker refresh request ID
+        required: false
+        type: string
+
+jobs:
+  run-pipeline:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: a-share-daily-refresh
+      cancel-in-progress: false
+    env:
+      R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+      PUBLISH_URL: ${{ secrets.PUBLISH_URL }}
+      PUBLISH_SECRET: ${{ secrets.PUBLISH_SECRET }}
+      REFRESH_CALLBACK_URL: ${{ secrets.REFRESH_CALLBACK_URL }}
+      REFRESH_CALLBACK_SECRET: ${{ secrets.REFRESH_CALLBACK_SECRET }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install Python Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Restore historical snapshot from R2
+        run: |
+          if aws s3 ls "s3://${R2_BUCKET}/historical-current.zip" --endpoint-url "$R2_ENDPOINT" >/dev/null 2>&1; then
+            aws s3 cp "s3://${R2_BUCKET}/historical-current.zip" data/snapshots/historical-current.zip --endpoint-url "$R2_ENDPOINT"
+            python -m pipeline.jobs.snapshot_history --verify data/snapshots/historical-current.zip
+            unzip -q data/snapshots/historical-current.zip -d data
+          fi
+
+      - name: Mark manual refresh running
+        if: ${{ inputs.refresh_id != '' }}
+        run: |
+          curl --fail-with-body -X POST "$REFRESH_CALLBACK_URL" -H "Content-Type: application/json" -H "X-Refresh-Secret: $REFRESH_CALLBACK_SECRET" -d '{"id":"${{ inputs.refresh_id }}","status":"running"}'
+
+      - name: Incremental download and name repair
+        run: |
+          if [ ! -f data/historical/checkpoints.json ]; then
+            python -m pipeline.jobs.download_history --workers 2
+          else
+            python -m pipeline.jobs.download_history --repair-names
+            python -m pipeline.jobs.download_history --incremental --workers 2
+          fi
+
+      - name: Compute Screener & Multi-Factor Scores
+        run: |
+          python -m pipeline.jobs.build_screener --data-dir data/historical --output reports/screener-publish.json
+
+      - name: Publish to Worker
+        run: |
+          python -m pipeline.jobs.publish_screener --input reports/screener-publish.json
+
+      - name: Create and upload refreshed snapshot
+        run: |
+          python -m pipeline.jobs.snapshot_history --output data/snapshots/historical-current.zip
+          python -m pipeline.jobs.snapshot_history --verify data/snapshots/historical-current.zip
+          aws s3 cp data/snapshots/historical-current.zip "s3://${R2_BUCKET}/historical-current.zip" --endpoint-url "$R2_ENDPOINT"
+
+      - name: Mark manual refresh complete
+        if: ${{ always() && inputs.refresh_id != '' }}
+        run: |
+          if [ "${{ job.status }}" = "success" ]; then
+            details=$(python -c "import json; p=json.load(open('reports/screener-publish.json')); print(json.dumps({'id':'${{ inputs.refresh_id }}','status':'completed','tradeDate':p['tradeDate'],'rowCount':len(p['stocks'])}))")
+          else
+            details='{"id":"${{ inputs.refresh_id }}","status":"failed","error":"GitHub Actions pipeline failed. Check the workflow run log."}'
+          fi
+          curl --fail-with-body -X POST "$REFRESH_CALLBACK_URL" -H "Content-Type: application/json" -H "X-Refresh-Secret: $REFRESH_CALLBACK_SECRET" -d "$details"

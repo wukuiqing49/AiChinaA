@@ -6,6 +6,7 @@ __pycache__/
 
 data/
 reports/
+frontend-dev*.log
 *.sqlite
 *.sqlite3
 

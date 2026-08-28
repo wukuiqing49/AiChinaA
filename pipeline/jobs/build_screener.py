@@ -12,12 +12,13 @@ import pandas as pd
 
 from pipeline.calculations.technical import calculate_technical_factors, score_technical_factors
 from pipeline.providers.akshare_provider import AkShareProvider
+from pipeline.storage.parquet_store import load_quotes_file
+from pipeline.universe import CORE_INDICES, classify_instrument, filter_universe
 
 FALLBACK_CODES = (
     "000001", "000002", "000333", "000651", "000858", "000938", "002230", "002415",
-    "002475", "002594", "300014", "300059", "300124", "300308", "300750", "600000",
-    "600036", "600150", "600276", "600519", "601318", "601398", "603259", "688111",
-    "688981", "920000", "920001", "920002", "920008",
+    "002475", "002594", "600000", "600036", "600150", "600276", "600519", "601318",
+    "601398", "603259", "510050", "510300", "510500", "159915", "159919",
 )
 
 
@@ -40,12 +41,16 @@ def _normalize_codes(stock_list: pd.DataFrame) -> pd.DataFrame:
         source = _column(stock_list, names)
         output[target] = pd.to_numeric(stock_list[source], errors="coerce") if source else None
     output = output[output["code"].str.match(r"^\d{6}$")]
+    output = filter_universe(output, allow_stocks=True, allow_etfs=True, exclude_st=True)
+    output["instrument_type"] = output.apply(
+        lambda row: classify_instrument(row["code"], row["name"]), axis=1
+    )
     return output.drop_duplicates("code").reset_index(drop=True)
 
 
 def _fallback_metadata(max_stocks: int) -> pd.DataFrame:
     codes = list(FALLBACK_CODES if max_stocks <= 0 else FALLBACK_CODES[:max_stocks])
-    return pd.DataFrame(
+    output = pd.DataFrame(
         {
             "code": codes,
             "name": codes,
@@ -54,6 +59,100 @@ def _fallback_metadata(max_stocks: int) -> pd.DataFrame:
             "turnover_rate": [None] * len(codes),
         }
     )
+    output["instrument_type"] = output["code"].map(classify_instrument)
+    return output
+
+
+class LocalHistoryProvider:
+    """Adapter that lets the screener reuse downloaded Parquet history."""
+
+    def __init__(self, data_dir: Path) -> None:
+        self._paths: dict[str, Path] = {}
+        self._names = self._load_names(data_dir / "checkpoints.json")
+        for folder in ("stocks", "etfs"):
+            for quote_file in (data_dir / folder).glob("*.parquet"):
+                self._paths[quote_file.stem] = quote_file
+
+    @staticmethod
+    def _load_names(checkpoint_file: Path) -> dict[str, str]:
+        try:
+            payload = json.loads(checkpoint_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        if not isinstance(payload, dict):
+            return {}
+        return {
+            str(code): str(item.get("name") or code)
+            for code, item in payload.items()
+            if isinstance(item, dict)
+        }
+
+    def get_stock_list(self) -> pd.DataFrame:
+        codes = sorted(self._paths)
+        return pd.DataFrame(
+            {
+                "code": codes,
+                "name": [self._names.get(code, code) for code in codes],
+            }
+        )
+
+    def get_daily_quotes(
+        self, code: str, start_date: str, end_date: str, adjust: str
+    ) -> pd.DataFrame:
+        quote_file = self._paths.get(str(code).zfill(6))
+        if quote_file is None:
+            return pd.DataFrame()
+        return load_quotes_file(
+            quote_file,
+            start_date=f"{start_date[:4]}-{start_date[4:6]}-{start_date[6:]}",
+            end_date=f"{end_date[:4]}-{end_date[4:6]}-{end_date[6:]}",
+        )
+
+    def normalize_daily_quotes(self, frame: pd.DataFrame, code: str) -> pd.DataFrame:
+        return frame
+
+
+def _build_index_payload(data_dir: Path) -> list[dict[str, object]]:
+    names = {item["code"]: item["name"] for item in CORE_INDICES}
+    frames = [
+        load_quotes_file(quote_file)
+        for quote_file in sorted((data_dir / "indices").glob("*.parquet"))
+    ]
+    frames = [frame for frame in frames if not frame.empty and len(frame) >= 20]
+    if not frames:
+        return []
+
+    quotes = pd.concat(frames, ignore_index=True)
+    factors = calculate_technical_factors(quotes, price_adjustment="qfq")
+    latest = factors.sort_values("trade_date").groupby("code", as_index=False).tail(1)
+    quote_latest = quotes.sort_values("trade_date").groupby("code", as_index=False).tail(1)
+    quote_columns = [
+        column
+        for column in ("code", "trade_date", "close", "pct_change")
+        if column in quote_latest
+    ]
+    latest = latest.merge(
+        quote_latest[quote_columns],
+        on=["code", "trade_date"],
+        how="left",
+        suffixes=("", "_quote"),
+    )
+    output = []
+    for item in latest.sort_values("code").to_dict(orient="records"):
+        code = str(item["code"])
+        output.append(
+            {
+                "code": code,
+                "name": names.get(code, code),
+                "tradeDate": str(item["trade_date"]),
+                "close": _json_value(item.get("close_quote", item.get("close"))),
+                "pctChange": _json_value(item.get("pct_change_quote", item.get("pct_change"))),
+                "ret20d": _json_value(item.get("ret_20d")),
+                "ma20Slope": _json_value(item.get("ma20_slope")),
+                "volatility20": _json_value(item.get("volatility_20")),
+            }
+        )
+    return output
 
 
 def _market(code: str) -> str:
@@ -137,6 +236,8 @@ def build_payload(
         row = {
             "code": code,
             "name": str(item.get("name") or code),
+            "instrumentType": str(item.get("instrument_type") or classify_instrument(code)),
+            "tradeDate": str(item["trade_date"]),
             "close": (
                 item.get("close_quote")
                 if item.get("close_quote") is not None
@@ -169,6 +270,7 @@ def build_payload(
         "runId": f"screener-{trade_date}-{int(time.time())}",
         "tradeDate": trade_date,
         "stocks": rows,
+        "indices": [],
     }
     return payload, failures
 
@@ -188,22 +290,30 @@ def parse_args() -> argparse.Namespace:
         description="Build the JSON package consumed by the screener publisher."
     )
     parser.add_argument("--output", type=Path, default=Path("reports/screener-publish.json"))
+    parser.add_argument("--data-dir", type=Path, default=Path("data/historical"))
     parser.add_argument("--start-date", default=(date.today() - timedelta(days=380)).isoformat())
     parser.add_argument("--end-date", default=date.today().isoformat())
-    parser.add_argument("--max-stocks", type=int, default=300, help="0 means all listed stocks")
+    parser.add_argument("--max-stocks", type=int, default=0, help="0 means all saved instruments")
     parser.add_argument("--workers", type=int, default=4)
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
+    provider = (
+        LocalHistoryProvider(args.data_dir)
+        if (args.data_dir / "stocks").exists()
+        else AkShareProvider()
+    )
     payload, failures = build_payload(
-        AkShareProvider(),
+        provider,
         start_date=args.start_date,
         end_date=args.end_date,
         max_stocks=args.max_stocks,
         workers=args.workers,
     )
+    if isinstance(provider, LocalHistoryProvider):
+        payload["indices"] = _build_index_payload(args.data_dir)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(
         json.dumps(payload, ensure_ascii=False, allow_nan=False), encoding="utf-8"

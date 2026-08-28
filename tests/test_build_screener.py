@@ -48,4 +48,5 @@ def test_build_payload_creates_publisher_shape() -> None:
     assert payload["tradeDate"] == "2026-04-10"
     assert len(payload["stocks"]) == 2
     assert {row["market"] for row in payload["stocks"]} == {"SH", "SZ"}
+    assert {row["tradeDate"] for row in payload["stocks"]} == {"2026-04-10"}
     assert {"ret20d", "scoreTotal", "volatility20"}.issubset(payload["stocks"][0])

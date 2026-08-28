@@ -16,6 +16,12 @@ const env: Env = {
   ]),
   SESSION_SECRET: "test-session-secret-not-for-production",
   PUBLISH_SECRET: "test-publish-secret",
+  ADMIN_USERNAMES: "tester",
+  GITHUB_ACTIONS_TOKEN: "test-token",
+  REFRESH_CALLBACK_SECRET: "test-refresh-callback-secret",
+  GITHUB_OWNER: "owner",
+  GITHUB_REPOSITORY: "repo",
+  GITHUB_WORKFLOW: "daily_pipeline.yml",
 };
 
 describe("fixed account authentication", () => {

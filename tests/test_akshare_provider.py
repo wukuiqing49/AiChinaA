@@ -39,6 +39,16 @@ class FakeFinancialAkShare:
         )
 
 
+class FakeEtfAkShare:
+    def fund_etf_spot_em(self) -> pd.DataFrame:
+        return pd.DataFrame(
+            {
+                "code": ["510300", "159915"],
+                "name": ["CSI 300 ETF", "Growth ETF"],
+            }
+        )
+
+
 def test_normalize_daily_quotes_preserves_code_and_numeric_columns() -> None:
     provider = AkShareProvider(client=FakeAkShare())
     source = provider.get_daily_quotes("000001", "20260824", "20260825")
@@ -99,6 +109,19 @@ def test_sina_symbol_conversion_supports_beijing_exchange() -> None:
     assert AkShareProvider._to_sina_symbol("920002") == "bj920002"
     assert AkShareProvider._to_sina_symbol("600519") == "sh600519"
     assert AkShareProvider._to_sina_symbol("300750") == "sz300750"
+
+
+def test_etf_universe_and_exchange_symbols_are_normalized() -> None:
+    provider = AkShareProvider(client=FakeEtfAkShare())
+
+    actual = provider.get_etf_list()
+
+    assert actual.to_dict(orient="records") == [
+        {"code": "510300", "name": "CSI 300 ETF"},
+        {"code": "159915", "name": "Growth ETF"},
+    ]
+    assert AkShareProvider._to_tx_symbol("510300") == "sh510300"
+    assert AkShareProvider._to_sina_symbol("159915") == "sz159915"
 
 
 def test_financial_probe_requires_announcement_date_for_historical_scoring() -> None:

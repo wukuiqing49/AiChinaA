@@ -37,12 +37,71 @@ class AkShareProvider:
         return self._tag_source(self._call("tool_trade_date_hist_sina")(), "akshare/sina")
 
     def get_stock_list(self) -> pd.DataFrame:
+        def normalize_exchange_list(frame: pd.DataFrame) -> pd.DataFrame:
+            if frame.empty or len(frame.columns) < 2:
+                raise ValueError("exchange list is missing code or name columns")
+            code_position = next(
+                (
+                    position
+                    for position, column in enumerate(frame.columns)
+                    if frame[column].astype(str).str.fullmatch(r"\d{6}").mean() > 0.8
+                ),
+                None,
+            )
+            if code_position is None or code_position == len(frame.columns) - 1:
+                raise ValueError("exchange list has no recognizable code and name columns")
+            output = frame.iloc[:, [code_position, code_position + 1]].copy()
+            output.columns = ["code", "name"]
+            output["code"] = output["code"].astype(str).str.strip().str.zfill(6)
+            return output
+
+        def exchange_lists() -> pd.DataFrame:
+            sh_df = normalize_exchange_list(self._call("stock_info_sh_name_code")())
+            sz_df = normalize_exchange_list(
+                self._call("stock_info_sz_name_code")(symbol="A\u80a1\u5217\u8868")
+            )
+            return pd.concat((sh_df, sz_df), ignore_index=True).drop_duplicates("code")
+
+        def szse_fallback() -> pd.DataFrame:
+            sz_df = self._call("stock_info_sz_name_code")(symbol="A股列表")
+            code_col = next((c for c in ("A股代码", "代码", "code") if c in sz_df.columns), None)
+            name_col = next((c for c in ("A股简称", "名称", "name") if c in sz_df.columns), None)
+            rename_map = {}
+            if code_col:
+                rename_map[code_col] = "code"
+            if name_col:
+                rename_map[name_col] = "name"
+            return sz_df.rename(columns=rename_map)
+
         return self._first_success(
             (
+                ("akshare/exchanges", exchange_lists),
                 ("akshare/eastmoney", self._call("stock_zh_a_spot_em")),
-                ("akshare/sina", self._call("stock_info_a_code_name")),
+                ("akshare/sina", self._call("stock_zh_a_spot")),
+                ("akshare/szse", szse_fallback),
+                ("akshare/sina_code_name", self._call("stock_info_a_code_name")),
             )
         )
+
+    def get_etf_list(self) -> pd.DataFrame:
+        """Return a normalized ETF code/name universe independent of stock listings."""
+        frame = self._first_success(
+            (("akshare/eastmoney", self._call("fund_etf_spot_em")),)
+        )
+        code_position = next(
+            (
+                position
+                for position, column in enumerate(frame.columns)
+                if frame[column].astype(str).str.fullmatch(r"\d{6}").mean() > 0.8
+            ),
+            None,
+        )
+        if code_position is None or code_position == len(frame.columns) - 1:
+            raise ValueError("ETF list has no recognizable code and name columns")
+        output = frame.iloc[:, [code_position, code_position + 1]].copy()
+        output.columns = ["code", "name"]
+        output["code"] = output["code"].astype(str).str.strip().str.zfill(6)
+        return output.drop_duplicates("code").reset_index(drop=True)
 
     def get_daily_quotes(
         self,
@@ -51,8 +110,58 @@ class AkShareProvider:
         end_date: str,
         adjust: str = "",
     ) -> pd.DataFrame:
+        tx_symbol = self._to_tx_symbol(code)
+        attempts: list[tuple[str, Callable[[], pd.DataFrame]]] = []
+        if tx_symbol is not None:
+            attempts.append(
+                (
+                    "akshare/tencent",
+                    lambda: self._call("stock_zh_a_hist_tx")(
+                        symbol=tx_symbol,
+                        start_date=start_date,
+                        end_date=end_date,
+                        adjust=adjust,
+                    ),
+                )
+            )
+
         def eastmoney() -> pd.DataFrame:
             return self._call("stock_zh_a_hist")(
+                symbol=code,
+                period="daily",
+                start_date=start_date,
+                end_date=end_date,
+                adjust=adjust,
+            )
+
+        attempts.append(("akshare/eastmoney", eastmoney))
+
+        sina_symbol = self._to_sina_symbol(code)
+        if sina_symbol is not None:
+            attempts.append(
+                (
+                    "akshare/sina",
+                    lambda: self._call("stock_zh_a_daily")(
+                        symbol=sina_symbol,
+                        start_date=start_date,
+                        end_date=end_date,
+                        adjust=adjust,
+                    ),
+                )
+            )
+        frame = self._first_success(attempts)
+        frame.attrs["price_adjustment"] = adjust or "none"
+        return frame
+
+    def get_etf_quotes(
+        self,
+        code: str,
+        start_date: str,
+        end_date: str,
+        adjust: str = "",
+    ) -> pd.DataFrame:
+        def eastmoney() -> pd.DataFrame:
+            return self._call("fund_etf_hist_em")(
                 symbol=code,
                 period="daily",
                 start_date=start_date,
@@ -79,11 +188,8 @@ class AkShareProvider:
             attempts.append(
                 (
                     "akshare/sina",
-                    lambda: self._call("stock_zh_a_daily")(
+                    lambda: self._call("fund_etf_hist_sina")(
                         symbol=sina_symbol,
-                        start_date=start_date,
-                        end_date=end_date,
-                        adjust=adjust,
                     ),
                 )
             )
@@ -207,18 +313,18 @@ class AkShareProvider:
     @staticmethod
     def _to_tx_symbol(code: str) -> str | None:
         normalized_code = str(code).zfill(6)
-        if normalized_code.startswith("6"):
+        if normalized_code.startswith(("5", "6")):
             return f"sh{normalized_code}"
-        if normalized_code.startswith(("0", "2", "3")):
+        if normalized_code.startswith(("0", "1", "2", "3")):
             return f"sz{normalized_code}"
         return None
 
     @staticmethod
     def _to_sina_symbol(code: str) -> str | None:
         normalized_code = str(code).zfill(6)
-        if normalized_code.startswith("6"):
+        if normalized_code.startswith(("5", "6")):
             return f"sh{normalized_code}"
-        if normalized_code.startswith(("0", "2", "3")):
+        if normalized_code.startswith(("0", "1", "2", "3")):
             return f"sz{normalized_code}"
         if normalized_code.startswith(("4", "8", "9")):
             return f"bj{normalized_code}"
@@ -237,27 +343,23 @@ class AkShareProvider:
 
     @staticmethod
     def _normalize_tencent_daily_quotes(frame: pd.DataFrame) -> pd.DataFrame:
-        required_columns = {"date", "open", "high", "low", "close", "volume", "amount", "turnover"}
-        missing = sorted(required_columns.difference(frame.columns))
-        if missing:
-            raise ValueError(f"daily quote schema missing columns: {', '.join(missing)}")
+        if "date" not in frame.columns and "trade_date" not in frame.columns:
+            raise ValueError("daily quote schema missing columns: date")
 
-        source_columns = [
-            "date",
-            "open",
-            "high",
-            "low",
-            "close",
-            "volume",
-            "amount",
-            "turnover",
-        ]
-        normalized = frame.loc[:, source_columns].copy()
-        normalized = normalized.rename(columns={"date": "trade_date", "turnover": "turnover_rate"})
-        turnover_rate = pd.to_numeric(normalized["turnover_rate"], errors="coerce")
-        normalized["turnover_rate"] = turnover_rate * 100
-        close = pd.to_numeric(normalized["close"], errors="coerce")
-        normalized["pct_change"] = close.pct_change() * 100
+        col_map = {"date": "trade_date", "turnover": "turnover_rate"}
+        normalized = frame.rename(columns=col_map).copy()
+        numeric_columns = (
+            "open", "high", "low", "close", "volume", "amount", "turnover_rate", "pct_change"
+        )
+        for col in numeric_columns:
+            if col not in normalized.columns:
+                normalized[col] = None
+        if "turnover" in frame.columns:
+            turnover_rate = pd.to_numeric(normalized["turnover_rate"], errors="coerce")
+            normalized["turnover_rate"] = turnover_rate * 100
+        if "close" in normalized.columns and normalized["pct_change"].isna().all():
+            close = pd.to_numeric(normalized["close"], errors="coerce")
+            normalized["pct_change"] = close.pct_change(fill_method=None) * 100
         output_columns = [
             "trade_date",
             "open",

@@ -1,6 +1,19 @@
 export interface User {
   username: string;
   displayName: string | null;
+  isAdmin: boolean;
+}
+
+export interface DataRefresh {
+  id: string;
+  status: "queued" | "running" | "completed" | "failed";
+  requestedBy: string | null;
+  requestedAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  tradeDate: string | null;
+  rowCount: number | null;
+  error: string | null;
 }
 
 export interface WatchlistItem {
@@ -33,6 +46,7 @@ export interface Recommendation {
 export interface ScreenerItem {
   code: string;
   name: string;
+  instrumentType: "stock" | "etf";
   tradeDate: string;
   close: number | null;
   score: number | null;
@@ -49,9 +63,21 @@ export interface ScreenerItem {
   volatility20: number | null;
 }
 
+export interface MarketIndexItem {
+  code: string;
+  name: string;
+  tradeDate: string;
+  close: number | null;
+  pctChange: number | null;
+  ret20d: number | null;
+  ma20Slope: number | null;
+  volatility20: number | null;
+}
+
 export interface ScreenerQuery {
   code?: string;
   name?: string;
+  instrumentType?: "stock" | "etf" | "";
   market?: string;
   industry?: string;
   minPrice?: string;
@@ -85,6 +111,9 @@ export const api = {
     }
     return request<{ items: ScreenerItem[]; total: number; page: number; pageSize: number; asOf: string | null }>(`/api/screener?${params}`);
   },
+  marketIndices: () => request<{ items: MarketIndexItem[] }>("/api/market-indices"),
+  dataRefresh: () => request<{ refresh: DataRefresh | null }>("/api/data-refresh"),
+  requestDataRefresh: () => request<{ refresh: DataRefresh }>("/api/data-refresh", { method: "POST" }),
   login: (username: string, password: string) => request<{ user: User }>("/api/auth/login", {
     method: "POST",
     headers: { "content-type": "application/json" },
