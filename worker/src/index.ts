@@ -452,14 +452,15 @@ app.post("/api/internal/publish-fund-flow", async (context) => {
        code, data_date, source, main_net_inflow, main_net_inflow_pct, super_large_net_inflow,
        large_net_inflow, medium_net_inflow, small_net_inflow, main_net_inflow_3d,
        main_net_inflow_5d, main_net_inflow_10d, updated_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+       WHERE EXISTS (SELECT 1 FROM stock_latest WHERE code = ?)
      ON CONFLICT(code) DO UPDATE SET data_date=excluded.data_date, source=excluded.source,
        main_net_inflow=excluded.main_net_inflow, main_net_inflow_pct=excluded.main_net_inflow_pct,
        super_large_net_inflow=excluded.super_large_net_inflow, large_net_inflow=excluded.large_net_inflow,
        medium_net_inflow=excluded.medium_net_inflow, small_net_inflow=excluded.small_net_inflow,
        main_net_inflow_3d=excluded.main_net_inflow_3d, main_net_inflow_5d=excluded.main_net_inflow_5d,
        main_net_inflow_10d=excluded.main_net_inflow_10d, updated_at=excluded.updated_at`,
-  ).bind(row.code, dataDate, source, row.mainNetInflow, row.mainNetInflowPct, row.superLargeNetInflow, row.largeNetInflow, row.mediumNetInflow, row.smallNetInflow, row.mainNetInflow3d, row.mainNetInflow5d, row.mainNetInflow10d, now));
+  ).bind(row.code, dataDate, source, row.mainNetInflow, row.mainNetInflowPct, row.superLargeNetInflow, row.largeNetInflow, row.mediumNetInflow, row.smallNetInflow, row.mainNetInflow3d, row.mainNetInflow5d, row.mainNetInflow10d, now, row.code));
   try {
     for (let index = 0; index < statements.length; index += 100) await context.env.DB.batch(statements.slice(index, index + 100));
     return context.json({ status: "completed", rowCount: rows.length, dataDate, source });
