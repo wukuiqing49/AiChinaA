@@ -208,8 +208,12 @@ const moneyFlowPublishSchema = z.object({
     mainNetInflow3d: z.number().nullable(), mainNetInflow5d: z.number().nullable(), mainNetInflow10d: z.number().nullable(),
   })).min(1).max(6000),
 });
+const valuationPublishSchema = z.object({
+  dataDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), source: z.string().min(1).max(80),
+  rows: z.array(z.object({ code: z.string().regex(/^\d{6}$/), peTtm: z.number().nullable(), pb: z.number().nullable(), totalMarketCap: z.number().min(0).nullable(), floatMarketCap: z.number().min(0).nullable() })).min(1).max(6000),
+});
 const ruleConditionSchema = z.object({
-  field: z.enum(["ret5d", "ret20d", "ret60d", "ret120d", "ret250d", "ma20Slope", "volumeRatio5", "volumeRatio20", "amount", "amountRatio5", "amountRatio20", "rsi14", "volatility20", "volatility60", "maxDrawdown60", "distanceHigh20", "distanceHigh60", "distanceHigh250", "distanceLow250", "pricePercentile250", "turnoverRate", "close", "score", "mainNetInflow", "mainNetInflowPct", "superLargeNetInflow", "largeNetInflow", "mediumNetInflow", "smallNetInflow", "mainNetInflow3d", "mainNetInflow5d", "mainNetInflow10d", "industry", "market"]),
+  field: z.enum(["ret5d", "ret20d", "ret60d", "ret120d", "ret250d", "ma20Slope", "volumeRatio5", "volumeRatio20", "amount", "amountRatio5", "amountRatio20", "rsi14", "volatility20", "volatility60", "maxDrawdown60", "distanceHigh20", "distanceHigh60", "distanceHigh250", "distanceLow250", "pricePercentile250", "turnoverRate", "close", "score", "mainNetInflow", "mainNetInflowPct", "superLargeNetInflow", "largeNetInflow", "mediumNetInflow", "smallNetInflow", "mainNetInflow3d", "mainNetInflow5d", "mainNetInflow10d", "peTtm", "pb", "totalMarketCap", "floatMarketCap", "industry", "market"]),
   op: z.enum([">", ">=", "<", "<=", "==", "!=", "contains"]),
   value: z.union([z.number().finite(), z.string().trim().min(1).max(80)]),
 });
@@ -264,6 +268,7 @@ app.post("/api/rule-screener", async (context) => {
     ret60d: { sql: "d.ret_60d", numeric: true }, ret120d: { sql: "d.ret_120d", numeric: true }, ret250d: { sql: "d.ret_250d", numeric: true }, ma20Slope: { sql: "d.ma20_slope", numeric: true },
     volumeRatio5: { sql: "d.volume_ratio_5", numeric: true }, volumeRatio20: { sql: "d.volume_ratio_20", numeric: true }, amount: { sql: "d.amount", numeric: true }, amountRatio5: { sql: "d.amount_ratio_5", numeric: true }, amountRatio20: { sql: "d.amount_ratio_20", numeric: true }, rsi14: { sql: "d.rsi_14", numeric: true }, volatility20: { sql: "d.volatility_20", numeric: true }, volatility60: { sql: "d.volatility_60", numeric: true }, maxDrawdown60: { sql: "d.max_drawdown_60", numeric: true }, distanceHigh20: { sql: "d.distance_high_20", numeric: true }, distanceHigh60: { sql: "d.distance_high_60", numeric: true }, distanceHigh250: { sql: "d.distance_high_250", numeric: true }, distanceLow250: { sql: "d.distance_low_250", numeric: true }, pricePercentile250: { sql: "d.price_percentile_250", numeric: true },
     mainNetInflow: { sql: "f.main_net_inflow", numeric: true }, mainNetInflowPct: { sql: "f.main_net_inflow_pct", numeric: true }, superLargeNetInflow: { sql: "f.super_large_net_inflow", numeric: true }, largeNetInflow: { sql: "f.large_net_inflow", numeric: true }, mediumNetInflow: { sql: "f.medium_net_inflow", numeric: true }, smallNetInflow: { sql: "f.small_net_inflow", numeric: true }, mainNetInflow3d: { sql: "f.main_net_inflow_3d", numeric: true }, mainNetInflow5d: { sql: "f.main_net_inflow_5d", numeric: true }, mainNetInflow10d: { sql: "f.main_net_inflow_10d", numeric: true },
+    peTtm: { sql: "v.pe_ttm", numeric: true }, pb: { sql: "v.pb", numeric: true }, totalMarketCap: { sql: "v.total_market_cap", numeric: true }, floatMarketCap: { sql: "v.float_market_cap", numeric: true },
     turnoverRate: { sql: "d.turnover_rate", numeric: true }, close: { sql: "s.close", numeric: true },
     score: { sql: "s.score_total", numeric: true }, industry: { sql: "d.industry", numeric: false },
     market: { sql: "d.market", numeric: false },
@@ -290,7 +295,7 @@ app.post("/api/rule-screener", async (context) => {
   const where = `WHERE ${query.logic === "AND" ? conditions.join(" AND ") : `(${conditions.slice(0, query.excludeSt ? 2 : 1).join(" AND ")}) AND (${conditions.slice(query.excludeSt ? 2 : 1).join(" OR ")})`}`;
   const orderColumn = { score: "s.score_total", price: "s.close", ret20: "d.ret_20d", turnover: "d.turnover_rate", volatility: "d.volatility_20" }[query.sortBy];
   const offset = (query.page - 1) * query.pageSize;
-  const baseSql = `FROM stock_latest s LEFT JOIN stock_screen_latest d ON d.code = s.code LEFT JOIN stock_money_flow_latest f ON f.code = s.code ${where}`;
+  const baseSql = `FROM stock_latest s LEFT JOIN stock_screen_latest d ON d.code = s.code LEFT JOIN stock_money_flow_latest f ON f.code = s.code LEFT JOIN stock_valuation_latest v ON v.code = s.code ${where}`;
   const [rows, count] = await Promise.all([
     context.env.DB.prepare(
       `SELECT s.code, s.name, s.instrument_type, s.is_st, s.trade_date, s.quote_date, s.quote_time, s.quote_source,
@@ -467,6 +472,21 @@ app.post("/api/internal/publish-fund-flow", async (context) => {
   } catch (error) {
     return context.json({ error: error instanceof Error ? error.message.slice(0, 500) : "资金流保存失败。" }, 500);
   }
+});
+
+app.post("/api/internal/publish-valuation", async (context) => {
+  if (!context.env.PUBLISH_SECRET || !secretsEqual(context.req.header("X-Publish-Secret") ?? "", context.env.PUBLISH_SECRET)) return context.json({ error: "发布凭据无效。" }, 401);
+  const body = valuationPublishSchema.safeParse(await context.req.json());
+  if (!body.success) return context.json({ error: "估值发布包格式无效。", details: body.error.flatten() }, 400);
+  const { dataDate, source, rows } = body.data;
+  const now = new Date().toISOString();
+  const statements = rows.map((row) => context.env.DB.prepare(
+    `INSERT INTO stock_valuation_latest (code, data_date, source, pe_ttm, pb, total_market_cap, float_market_cap, updated_at)
+     SELECT ?, ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM stock_latest WHERE code = ?)
+     ON CONFLICT(code) DO UPDATE SET data_date=excluded.data_date, source=excluded.source, pe_ttm=excluded.pe_ttm, pb=excluded.pb, total_market_cap=excluded.total_market_cap, float_market_cap=excluded.float_market_cap, updated_at=excluded.updated_at`,
+  ).bind(row.code, dataDate, source, row.peTtm, row.pb, row.totalMarketCap, row.floatMarketCap, now, row.code));
+  try { for (let index = 0; index < statements.length; index += 100) await context.env.DB.batch(statements.slice(index, index + 100)); return context.json({ status: "completed", rowCount: rows.length, dataDate, source }); }
+  catch (error) { return context.json({ error: error instanceof Error ? error.message.slice(0, 500) : "估值保存失败。" }, 500); }
 });
 
 app.post("/api/auth/login", async (context) => {
