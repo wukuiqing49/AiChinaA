@@ -120,7 +120,10 @@ app.get("/api/screener", async (context) => {
     conditions.push("s.score_total >= ?");
     bindings.push(query.minScore);
   }
-  const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+  conditions.unshift(
+    "s.updated_at = (SELECT started_at FROM sync_runs WHERE status = 'completed' ORDER BY completed_at DESC LIMIT 1)",
+  );
+  const where = `WHERE ${conditions.join(" AND ")}`;
   const orderColumn = {
     score: "s.score_total",
     price: "s.close",
@@ -145,7 +148,11 @@ app.get("/api/screener", async (context) => {
     ).bind(...bindings, query.pageSize, offset).all<ScreenerRow>(),
     context.env.DB.prepare(`SELECT COUNT(*) AS total ${baseSql}`).bind(...bindings).first<{ total: number }>(),
     context.env.DB.prepare(
-      "SELECT MAX(COALESCE(quote_date, trade_date)) AS trade_date FROM stock_latest",
+      `SELECT MAX(COALESCE(s.quote_date, s.trade_date)) AS trade_date
+         FROM stock_latest s
+        WHERE s.updated_at = (
+          SELECT started_at FROM sync_runs WHERE status = 'completed' ORDER BY completed_at DESC LIMIT 1
+        )`,
     ).first<{ trade_date: string | null }>(),
   ]);
   return context.json({
