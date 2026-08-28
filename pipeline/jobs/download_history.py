@@ -241,7 +241,10 @@ def run_download(
     pending_items: list[tuple[str, str, str, str]] = []  # (code, name, type, effective_start_date)
     for code, name, inst_type in target_items:
         cp = checkpoints.get(code)
-        if incremental and cp and cp.get("status") == "success":
+        if incremental:
+            if not cp or cp.get("status") != "success":
+                pending_items.append((code, name, inst_type, start_date))
+                continue
             max_d = str(cp.get("max_date", ""))
             if max_d and max_d < end_date:
                 # Need to fetch only from max_d to end_date
