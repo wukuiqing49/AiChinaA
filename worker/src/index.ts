@@ -8,6 +8,7 @@ import { calculateObservationTracking } from "./tracking";
 import type { Env, LatestStock, SessionUser } from "./types";
 
 const app = new Hono<{ Bindings: Env }>();
+const latestFullRunSql = "SELECT started_at FROM sync_runs WHERE status = 'completed' AND run_kind = 'full_market' ORDER BY completed_at DESC LIMIT 1";
 
 function normalizeSearchTerm(value: string): string {
   return value.normalize("NFKC").toLocaleLowerCase().replace(/\s+/gu, "");
@@ -45,6 +46,7 @@ const screenerQuerySchema = z.object({
 const screenerPublishSchema = z.object({
   runId: z.string().regex(/^[A-Za-z0-9._-]{8,80}$/),
   tradeDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  runKind: z.enum(["full_market", "supplemental_st", "single_stock"]).default("full_market"),
   stocks: z.array(z.object({
     code: z.string().regex(/^\d{6}$/),
     name: z.string().min(1).max(80),
@@ -67,6 +69,20 @@ const screenerPublishSchema = z.object({
     ma20Slope: z.number().nullable(),
     volumeRatio20: z.number().min(0).nullable(),
     volatility20: z.number().min(0).nullable(),
+    volumeRatio5: z.number().min(0).nullable().default(null),
+    amount: z.number().min(0).nullable().default(null),
+    amountRatio5: z.number().min(0).nullable().default(null),
+    amountRatio20: z.number().min(0).nullable().default(null),
+    rsi14: z.number().min(0).max(100).nullable().default(null),
+    ret120d: z.number().nullable().default(null),
+    ret250d: z.number().nullable().default(null),
+    distanceHigh20: z.number().nullable().default(null),
+    distanceHigh60: z.number().nullable().default(null),
+    distanceHigh250: z.number().nullable().default(null),
+    distanceLow250: z.number().nullable().default(null),
+    pricePercentile250: z.number().min(0).max(1).nullable().default(null),
+    volatility60: z.number().min(0).nullable().default(null),
+    maxDrawdown60: z.number().nullable().default(null),
   })).min(1).max(6000),
   indices: z.array(z.object({
     code: z.string().min(6).max(12),
@@ -133,9 +149,14 @@ app.get("/api/screener", async (context) => {
     conditions.push("s.score_total >= ?");
     bindings.push(query.minScore);
   }
-  conditions.unshift(
-    "s.updated_at = (SELECT started_at FROM sync_runs WHERE status = 'completed' ORDER BY completed_at DESC LIMIT 1)",
-  );
+  // Browsing is tied to the latest completed full-market snapshot. Identity
+  // searches deliberately bypass the snapshot boundary so supplemental ST
+  // updates remain searchable without replacing the market heatmap/Top 10.
+  if (!identitySearch) {
+    conditions.unshift(
+      `s.updated_at = (${latestFullRunSql})`,
+    );
+  }
   const where = `WHERE ${conditions.join(" AND ")}`;
   const orderColumn = {
     score: "s.score_total",
@@ -164,7 +185,7 @@ app.get("/api/screener", async (context) => {
       `SELECT MAX(COALESCE(s.quote_date, s.trade_date)) AS trade_date
          FROM stock_latest s
         WHERE s.updated_at = (
-          SELECT started_at FROM sync_runs WHERE status = 'completed' ORDER BY completed_at DESC LIMIT 1
+          ${latestFullRunSql}
         )`,
     ).first<{ trade_date: string | null }>(),
   ]);
@@ -175,6 +196,99 @@ app.get("/api/screener", async (context) => {
     pageSize: query.pageSize,
     asOf: asOf?.trade_date ?? null,
   });
+});
+const ruleConditionSchema = z.object({
+  field: z.enum(["ret5d", "ret20d", "ret60d", "ret120d", "ret250d", "ma20Slope", "volumeRatio5", "volumeRatio20", "amount", "amountRatio5", "amountRatio20", "rsi14", "volatility20", "volatility60", "maxDrawdown60", "distanceHigh20", "distanceHigh60", "distanceHigh250", "distanceLow250", "pricePercentile250", "turnoverRate", "close", "score", "industry", "market"]),
+  op: z.enum([">", ">=", "<", "<=", "==", "!=", "contains"]),
+  value: z.union([z.number().finite(), z.string().trim().min(1).max(80)]),
+});
+const ruleScreenerSchema = z.object({
+  logic: z.enum(["AND", "OR"]).default("AND"),
+  conditions: z.array(ruleConditionSchema).min(1).max(20),
+  excludeSt: z.boolean().default(true),
+  sortBy: z.enum(["score", "price", "ret20", "turnover", "volatility"]).default("score"),
+  sortDirection: z.enum(["asc", "desc"]).default("desc"),
+  page: z.number().int().min(1).max(10000).default(1),
+  pageSize: z.number().int().min(10).max(100).default(50),
+});
+
+app.get("/api/market-heatmap", async (context) => {
+  const rows = await context.env.DB.prepare(
+    `SELECT s.code, s.name, s.instrument_type, s.is_st, s.trade_date, s.quote_date, s.quote_time, s.quote_source,
+            s.close, s.score_total, s.data_completeness,
+            d.market, d.industry, d.pct_change, d.turnover_rate, d.ret_5d, d.ret_20d,
+            d.ret_60d, d.ma20_slope, d.volume_ratio_20, d.volatility_20
+       FROM stock_latest s
+       LEFT JOIN stock_screen_latest d ON d.code = s.code
+      WHERE s.is_st = 0 AND s.updated_at = (${latestFullRunSql})
+      ORDER BY COALESCE(d.industry, ''), s.score_total DESC, s.code ASC
+      LIMIT 6000`,
+  ).all<ScreenerRow>();
+  return context.json({ items: rows.results.map(toScreenerItem) });
+});
+
+app.get("/api/recommendations/top10", async (context) => {
+  const rows = await context.env.DB.prepare(
+    `SELECT s.code, s.name, s.instrument_type, s.is_st, s.trade_date, s.quote_date, s.quote_time, s.quote_source,
+            s.close, s.score_total, s.data_completeness,
+            d.market, d.industry, d.pct_change, d.turnover_rate, d.ret_5d, d.ret_20d,
+            d.ret_60d, d.ma20_slope, d.volume_ratio_20, d.volatility_20
+       FROM stock_latest s
+       LEFT JOIN stock_screen_latest d ON d.code = s.code
+      WHERE s.is_st = 0 AND s.updated_at = (${latestFullRunSql})
+      ORDER BY s.score_total DESC, s.code ASC
+      LIMIT 10`,
+  ).all<ScreenerRow>();
+  return context.json({ items: rows.results.map(toScreenerItem) });
+});
+
+app.post("/api/rule-screener", async (context) => {
+  const parsed = ruleScreenerSchema.safeParse(await context.req.json());
+  if (!parsed.success) {
+    return context.json({ error: "选股规则格式无效。", details: parsed.error.flatten() }, 400);
+  }
+  const query = parsed.data;
+  const fields = {
+    ret5d: { sql: "d.ret_5d", numeric: true }, ret20d: { sql: "d.ret_20d", numeric: true },
+    ret60d: { sql: "d.ret_60d", numeric: true }, ret120d: { sql: "d.ret_120d", numeric: true }, ret250d: { sql: "d.ret_250d", numeric: true }, ma20Slope: { sql: "d.ma20_slope", numeric: true },
+    volumeRatio5: { sql: "d.volume_ratio_5", numeric: true }, volumeRatio20: { sql: "d.volume_ratio_20", numeric: true }, amount: { sql: "d.amount", numeric: true }, amountRatio5: { sql: "d.amount_ratio_5", numeric: true }, amountRatio20: { sql: "d.amount_ratio_20", numeric: true }, rsi14: { sql: "d.rsi_14", numeric: true }, volatility20: { sql: "d.volatility_20", numeric: true }, volatility60: { sql: "d.volatility_60", numeric: true }, maxDrawdown60: { sql: "d.max_drawdown_60", numeric: true }, distanceHigh20: { sql: "d.distance_high_20", numeric: true }, distanceHigh60: { sql: "d.distance_high_60", numeric: true }, distanceHigh250: { sql: "d.distance_high_250", numeric: true }, distanceLow250: { sql: "d.distance_low_250", numeric: true }, pricePercentile250: { sql: "d.price_percentile_250", numeric: true },
+    turnoverRate: { sql: "d.turnover_rate", numeric: true }, close: { sql: "s.close", numeric: true },
+    score: { sql: "s.score_total", numeric: true }, industry: { sql: "d.industry", numeric: false },
+    market: { sql: "d.market", numeric: false },
+  } as const;
+  const conditions = [`s.updated_at = (${latestFullRunSql})`];
+  const bindings: (string | number)[] = [];
+  if (query.excludeSt) conditions.push("s.is_st = 0");
+  for (const condition of query.conditions) {
+    const field = fields[condition.field];
+    if (field.numeric) {
+      if (typeof condition.value !== "number" || condition.op === "contains") {
+        return context.json({ error: `${condition.field} 只支持数值比较。` }, 400);
+      }
+      conditions.push(`${field.sql} ${condition.op} ?`);
+      bindings.push(condition.value);
+    } else {
+      if (typeof condition.value !== "string" || !["==", "!=", "contains"].includes(condition.op)) {
+        return context.json({ error: `${condition.field} 只支持文本匹配。` }, 400);
+      }
+      conditions.push(`${field.sql} ${condition.op === "contains" ? "LIKE" : condition.op === "==" ? "=" : "!="} ?`);
+      bindings.push(condition.op === "contains" ? `%${condition.value}%` : condition.value);
+    }
+  }
+  const where = `WHERE ${query.logic === "AND" ? conditions.join(" AND ") : `(${conditions.slice(0, query.excludeSt ? 2 : 1).join(" AND ")}) AND (${conditions.slice(query.excludeSt ? 2 : 1).join(" OR ")})`}`;
+  const orderColumn = { score: "s.score_total", price: "s.close", ret20: "d.ret_20d", turnover: "d.turnover_rate", volatility: "d.volatility_20" }[query.sortBy];
+  const offset = (query.page - 1) * query.pageSize;
+  const baseSql = `FROM stock_latest s LEFT JOIN stock_screen_latest d ON d.code = s.code ${where}`;
+  const [rows, count] = await Promise.all([
+    context.env.DB.prepare(
+      `SELECT s.code, s.name, s.instrument_type, s.is_st, s.trade_date, s.quote_date, s.quote_time, s.quote_source,
+              s.close, s.score_total, s.data_completeness, d.market, d.industry, d.pct_change, d.turnover_rate,
+              d.ret_5d, d.ret_20d, d.ret_60d, d.ma20_slope, d.volume_ratio_20, d.volatility_20 ${baseSql}
+       ORDER BY ${orderColumn} ${query.sortDirection === "asc" ? "ASC" : "DESC"}, s.code ASC LIMIT ? OFFSET ?`,
+    ).bind(...bindings, query.pageSize, offset).all<ScreenerRow>(),
+    context.env.DB.prepare(`SELECT COUNT(*) AS total ${baseSql}`).bind(...bindings).first<{ total: number}>(),
+  ]);
+  return context.json({ items: rows.results.map(toScreenerItem), total: count?.total ?? 0, page: query.page, pageSize: query.pageSize });
 });
 
 app.get("/api/market-indices", async (context) => {
@@ -245,17 +359,17 @@ app.post("/api/internal/publish-screener", async (context) => {
   if (!body.success) {
     return context.json({ error: "筛选发布包格式无效。", details: body.error.flatten() }, 400);
   }
-  const { runId, tradeDate, stocks, indices } = body.data;
+  const { runId, tradeDate, runKind, stocks, indices } = body.data;
   const startedAt = new Date().toISOString();
   const existing = await context.env.DB.prepare("SELECT status, row_count FROM sync_runs WHERE run_id = ?").bind(runId).first<{ status: string; row_count: number }>();
   if (existing?.status === "completed") {
     return context.json({ runId, status: existing.status, rowCount: existing.row_count, idempotent: true });
   }
   await context.env.DB.prepare(
-    `INSERT INTO sync_runs (run_id, trade_date, status, row_count, started_at)
-     VALUES (?, ?, 'running', 0, ?)
-     ON CONFLICT(run_id) DO UPDATE SET status = 'running', error_message = NULL, started_at = excluded.started_at`,
-  ).bind(runId, tradeDate, startedAt).run();
+    `INSERT INTO sync_runs (run_id, trade_date, run_kind, status, row_count, started_at)
+     VALUES (?, ?, ?, 'running', 0, ?)
+     ON CONFLICT(run_id) DO UPDATE SET run_kind = excluded.run_kind, status = 'running', error_message = NULL, started_at = excluded.started_at`,
+  ).bind(runId, tradeDate, runKind, startedAt).run();
   try {
     const statements = [
       ...stocks.flatMap((stock) => [
@@ -272,14 +386,23 @@ app.post("/api/internal/publish-screener", async (context) => {
       context.env.DB.prepare(
         `INSERT INTO stock_screen_latest (
            code, trade_date, market, industry, pct_change, turnover_rate, ret_5d, ret_20d,
-           ret_60d, ma20_slope, volume_ratio_20, volatility_20, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ret_60d, ma20_slope, volume_ratio_20, volatility_20, volume_ratio_5, amount,
+           amount_ratio_5, amount_ratio_20, rsi_14, ret_120d, ret_250d, distance_high_20,
+           distance_high_60, distance_high_250, distance_low_250, price_percentile_250,
+           volatility_60, max_drawdown_60, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(code) DO UPDATE SET trade_date = excluded.trade_date, market = excluded.market,
            industry = excluded.industry, pct_change = excluded.pct_change, turnover_rate = excluded.turnover_rate,
            ret_5d = excluded.ret_5d, ret_20d = excluded.ret_20d, ret_60d = excluded.ret_60d,
            ma20_slope = excluded.ma20_slope, volume_ratio_20 = excluded.volume_ratio_20,
-           volatility_20 = excluded.volatility_20, updated_at = excluded.updated_at`,
-      ).bind(stock.code, stock.tradeDate, stock.market, stock.industry, stock.pctChange, stock.turnoverRate, stock.ret5d, stock.ret20d, stock.ret60d, stock.ma20Slope, stock.volumeRatio20, stock.volatility20, startedAt),
+           volatility_20 = excluded.volatility_20, volume_ratio_5 = excluded.volume_ratio_5,
+           amount = excluded.amount, amount_ratio_5 = excluded.amount_ratio_5, amount_ratio_20 = excluded.amount_ratio_20,
+           rsi_14 = excluded.rsi_14, ret_120d = excluded.ret_120d, ret_250d = excluded.ret_250d,
+           distance_high_20 = excluded.distance_high_20, distance_high_60 = excluded.distance_high_60,
+           distance_high_250 = excluded.distance_high_250, distance_low_250 = excluded.distance_low_250,
+           price_percentile_250 = excluded.price_percentile_250, volatility_60 = excluded.volatility_60,
+           max_drawdown_60 = excluded.max_drawdown_60, updated_at = excluded.updated_at`,
+      ).bind(stock.code, stock.tradeDate, stock.market, stock.industry, stock.pctChange, stock.turnoverRate, stock.ret5d, stock.ret20d, stock.ret60d, stock.ma20Slope, stock.volumeRatio20, stock.volatility20, stock.volumeRatio5, stock.amount, stock.amountRatio5, stock.amountRatio20, stock.rsi14, stock.ret120d, stock.ret250d, stock.distanceHigh20, stock.distanceHigh60, stock.distanceHigh250, stock.distanceLow250, stock.pricePercentile250, stock.volatility60, stock.maxDrawdown60, startedAt),
       ]),
       ...indices.map((index) => context.env.DB.prepare(
         `INSERT INTO market_index_latest (

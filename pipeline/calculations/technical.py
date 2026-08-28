@@ -65,6 +65,11 @@ def _calculate_one_code(frame: pd.DataFrame) -> pd.DataFrame:
 
     close = pd.to_numeric(ordered["close"], errors="coerce")
     volume = pd.to_numeric(ordered["volume"], errors="coerce")
+    amount = (
+        pd.to_numeric(ordered["amount"], errors="coerce")
+        if "amount" in ordered.columns
+        else pd.Series(float("nan"), index=ordered.index)
+    )
     returns = close.pct_change()
     output = ordered.loc[:, ["code", "trade_date"]].copy()
     for days in (5, 20, 60, 120, 250):
@@ -75,6 +80,8 @@ def _calculate_one_code(frame: pd.DataFrame) -> pd.DataFrame:
     output["rsi14"] = _rsi(close, 14)
     output["volume_ratio_5"] = volume / volume.rolling(5, min_periods=5).mean()
     output["volume_ratio_20"] = volume / volume.rolling(20, min_periods=20).mean()
+    output["amount_ratio_5"] = amount / amount.rolling(5, min_periods=5).mean()
+    output["amount_ratio_20"] = amount / amount.rolling(20, min_periods=20).mean()
     output["distance_high_20"] = close / close.rolling(20, min_periods=20).max() - 1
     output["distance_high_60"] = close / close.rolling(60, min_periods=60).max() - 1
     output["distance_high_250"] = close / close.rolling(250, min_periods=250).max() - 1

@@ -89,12 +89,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--input", type=Path, required=True)
     parser.add_argument("--url", default=os.environ.get("PUBLISH_URL", ""))
     parser.add_argument("--secret", default=os.environ.get("PUBLISH_SECRET", ""))
+    parser.add_argument(
+        "--run-kind",
+        choices=("full_market", "supplemental_st", "single_stock"),
+        default="full_market",
+    )
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
     payload = load_payload(args.input)
+    payload["runKind"] = args.run_kind
     result = publish_payload(payload, url=args.url, secret=args.secret)
     print(json.dumps(result, ensure_ascii=False))
     return 0

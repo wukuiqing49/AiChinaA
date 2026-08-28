@@ -1,0 +1,14 @@
+ALTER TABLE stock_screen_latest ADD COLUMN volume_ratio_5 REAL;
+ALTER TABLE stock_screen_latest ADD COLUMN amount REAL;
+ALTER TABLE stock_screen_latest ADD COLUMN amount_ratio_5 REAL;
+ALTER TABLE stock_screen_latest ADD COLUMN amount_ratio_20 REAL;
+ALTER TABLE stock_screen_latest ADD COLUMN rsi_14 REAL;
+ALTER TABLE stock_screen_latest ADD COLUMN ret_120d REAL;
+ALTER TABLE stock_screen_latest ADD COLUMN ret_250d REAL;
+ALTER TABLE stock_screen_latest ADD COLUMN distance_high_20 REAL;
+ALTER TABLE stock_screen_latest ADD COLUMN distance_high_60 REAL;
+ALTER TABLE stock_screen_latest ADD COLUMN distance_high_250 REAL;
+ALTER TABLE stock_screen_latest ADD COLUMN distance_low_250 REAL;
+ALTER TABLE stock_screen_latest ADD COLUMN price_percentile_250 REAL;
+ALTER TABLE stock_screen_latest ADD COLUMN volatility_60 REAL;
+ALTER TABLE stock_screen_latest ADD COLUMN max_drawdown_60 REAL;

@@ -75,7 +75,7 @@ Invoke-Step "Build screener and analysis package" {
 }
 
 Invoke-Step "Publish searchable ST data" {
-    & $python -m pipeline.jobs.publish_screener --input reports/screener-publish.json
+    & $python -m pipeline.jobs.publish_screener --input reports/screener-publish.json --run-kind supplemental_st
 }
 
 Write-Host "`nST data refresh completed. Default screening hides ST; code/name search includes ST."

@@ -1,7 +1,6 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 
-import { api, DataRefresh, MarketIndexItem, Recommendation, ScreenerItem, ScreenerQuery, User, WatchlistItem } from "./api";
-import { parseAndEvaluateRules, RULE_TEMPLATES, RuleParseResult } from "./ruleParser";
+import { api, DataRefresh, MarketIndexItem, Recommendation, RuleCondition, RuleScreenerRequest, ScreenerItem, ScreenerQuery, User, WatchlistItem } from "./api";
 import "./styles.css";
 
 type FilterState = Omit<ScreenerQuery, "page" | "pageSize">;
@@ -110,6 +109,8 @@ export default function App() {
   const [refreshError, setRefreshError] = useState<string | null>(null);
   const [filters, setFilters] = useState<FilterState>(emptyFilters);
   const [items, setItems] = useState<ScreenerItem[]>([]);
+  const [marketHeatmapItems, setMarketHeatmapItems] = useState<ScreenerItem[]>([]);
+  const [top10Items, setTop10Items] = useState<ScreenerItem[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [asOf, setAsOf] = useState<string | null>(null);
@@ -194,9 +195,29 @@ export default function App() {
     }
   }, []);
 
+  const loadMarketHeatmap = useCallback(async () => {
+    try {
+      const result = await api.marketHeatmap();
+      setMarketHeatmapItems(result.items);
+    } catch {
+      setMarketHeatmapItems([]);
+    }
+  }, []);
+
+  const loadTop10 = useCallback(async () => {
+    try {
+      const result = await api.top10();
+      setTop10Items(result.items);
+    } catch {
+      setTop10Items([]);
+    }
+  }, []);
+
   useEffect(() => {
     void loadUser();
     void loadScreen(emptyFilters, 1);
+    void loadMarketHeatmap();
+    void loadTop10();
     void loadRecommendations();
     void loadMarketIndices();
     void loadRefresh();
@@ -215,13 +236,15 @@ export default function App() {
 
     const timer = setInterval(() => {
       void loadScreen(filters, page);
+      void loadMarketHeatmap();
+      void loadTop10();
       void loadRecommendations();
       void loadMarketIndices();
       void loadRefresh();
     }, 120000);
 
     return () => clearInterval(timer);
-  }, [filters, loadMarketIndices, loadRecommendations, loadRefresh, loadScreen, loadUser, page]);
+  }, [filters, loadMarketHeatmap, loadMarketIndices, loadRecommendations, loadRefresh, loadScreen, loadTop10, loadUser, page]);
 
   useEffect(() => {
     const code = selectedStock?.code;
@@ -561,7 +584,7 @@ export default function App() {
         {/* VIEW 2: HEATMAP (市场全景热力图) */}
         {navTab === "heatmap" && (
           <MarketHeatmapView
-            items={items}
+            items={marketHeatmapItems}
             onSelectStock={(item) => handleSelectStock(item, false)}
           />
         )}
@@ -570,7 +593,7 @@ export default function App() {
         {navTab === "recommendations" && (
           <RecommendationsView
             recommendations={recommendations}
-            screenerItems={items}
+            screenerItems={top10Items}
             user={user}
             watchlist={watchlist}
             onAdd={addToWatchlist}
@@ -581,7 +604,6 @@ export default function App() {
         {/* VIEW 4: CUSTOM RULE SCREENER (规则选股 / AI 策略) */}
         {navTab === "rules" && (
           <CustomRuleScreenerView
-            items={items}
             user={user}
             onAdd={addToWatchlist}
             onSelectStock={(item) => handleSelectStock(item, false)}
@@ -1140,129 +1162,164 @@ function RecommendationsView({
 
 /** ------------------- CUSTOM RULE SCREENER COMPONENT ------------------- */
 function CustomRuleScreenerView({
-  items,
   user,
   onAdd,
   onSelectStock,
   onOpenFull,
 }: {
-  items: ScreenerItem[];
   user: User | null;
   onAdd: (code: string) => Promise<void>;
   onSelectStock: (item: ScreenerItem) => void;
   onOpenFull: (item: ScreenerItem) => void;
 }) {
-  const [ruleInput, setRuleInput] = useState<string>(RULE_TEMPLATES[0].code);
-  const [parseResult, setParseResult] = useState<RuleParseResult>(() =>
-    parseAndEvaluateRules(RULE_TEMPLATES[0].code, items)
-  );
-  const [copied, setCopied] = useState(false);
-
-  function handleEvaluate(input = ruleInput) {
-    const result = parseAndEvaluateRules(input, items);
-    setParseResult(result);
+  const [conditions, setConditions] = useState<RuleCondition[]>([
+    { field: "score", op: ">=", value: 70 },
+    { field: "ret20d", op: ">=", value: 0 },
+  ]);
+  const [logic, setLogic] = useState<RuleScreenerRequest["logic"]>("AND");
+  const [excludeSt, setExcludeSt] = useState(true);
+  const [sortBy, setSortBy] = useState<RuleScreenerRequest["sortBy"]>("score");
+  const [sortDirection, setSortDirection] = useState<RuleScreenerRequest["sortDirection"]>("desc");
+  const [matchedItems, setMatchedItems] = useState<ScreenerItem[]>([]);
+  const [total, setTotal] = useState<number | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [jsonInput, setJsonInput] = useState("");
+  const [promptCopied, setPromptCopied] = useState(false);
+  const fields: Array<{ value: RuleCondition["field"]; label: string; numeric: boolean }> = [
+    { value: "score", label: "综合评分", numeric: true }, { value: "ret5d", label: "5日涨幅（0.05=5%）", numeric: true },
+    { value: "ret20d", label: "20日涨幅（0.05=5%）", numeric: true }, { value: "ret60d", label: "60日涨幅（0.05=5%）", numeric: true }, { value: "ret120d", label: "120日涨幅（0.05=5%）", numeric: true }, { value: "ret250d", label: "250日涨幅（0.05=5%）", numeric: true },
+    { value: "ma20Slope", label: "MA20 斜率", numeric: true }, { value: "volumeRatio20", label: "20日量比", numeric: true },
+    { value: "volumeRatio5", label: "5日量比", numeric: true }, { value: "amount", label: "成交额", numeric: true }, { value: "amountRatio5", label: "5日成交额比", numeric: true }, { value: "amountRatio20", label: "20日成交额比", numeric: true }, { value: "rsi14", label: "RSI(14)", numeric: true },
+    { value: "volatility20", label: "20日波动率（0.2=20%）", numeric: true }, { value: "volatility60", label: "60日波动率（0.2=20%）", numeric: true }, { value: "maxDrawdown60", label: "60日最大回撤（-0.2=-20%）", numeric: true },
+    { value: "distanceHigh20", label: "距20日高点（-0.05=-5%）", numeric: true }, { value: "distanceHigh60", label: "距60日高点（-0.05=-5%）", numeric: true }, { value: "distanceHigh250", label: "距250日高点（-0.05=-5%）", numeric: true }, { value: "distanceLow250", label: "距250日低点（0.1=10%）", numeric: true }, { value: "pricePercentile250", label: "250日价格分位 (0-1)", numeric: true }, { value: "turnoverRate", label: "换手率 (%)", numeric: true },
+    { value: "close", label: "最新价", numeric: true }, { value: "industry", label: "所属行业", numeric: false }, { value: "market", label: "市场", numeric: false },
+  ];
+  const fieldMeta = (field: RuleCondition["field"]) => fields.find((item) => item.value === field)!;
+  const aiGenerationPrompt = `请将下面的选股想法转换为本系统支持的 JSON，不要输出 Markdown、解释或任何额外文字。\n\n输出结构：{ "logic": "AND" | "OR", "excludeSt": true | false, "sortBy": "score" | "price" | "ret20" | "turnover" | "volatility", "sortDirection": "asc" | "desc", "conditions": [{ "field": string, "op": string, "value": number|string }] }\n\n数值字段（value 必须是数字，op 只能是 >、>=、<、<=、==、!=）：score=综合评分；ret5d/ret20d/ret60d/ret120d/ret250d=对应周期涨幅，单位%；ma20Slope=20日均线斜率；volumeRatio5/volumeRatio20=5/20日量比；amount=成交额（元）；amountRatio5/amountRatio20=5/20日成交额比；rsi14=RSI(14，0-100)；volatility20/volatility60=年化波动率；maxDrawdown60=60日最大回撤；distanceHigh20/distanceHigh60/distanceHigh250=距对应周期高点；distanceLow250=距250日低点；pricePercentile250=250日价格分位（0-1）；turnoverRate=换手率；close=最新价。\n\n文本字段（value 必须是非空字符串，op 只能是 contains、==、!=）：industry=所属行业；market=市场。\n\nconditions 至少 1 条、最多 20 条。AND 表示全部满足；OR 表示任一满足。不要使用未列出的字段、运算符、括号、嵌套对象、自然语言条件或空值。\n\n示例：{"logic":"AND","excludeSt":true,"sortBy":"score","sortDirection":"desc","conditions":[{"field":"score","op":">=","value":70},{"field":"volumeRatio5","op":">=","value":1.5},{"field":"rsi14","op":"<=","value":65}]}`;
+  const addCondition = () => { if (conditions.length < 20) setConditions([...conditions, { field: "ret20d", op: ">=", value: 0 }]); };
+  function updateCondition(index: number, update: Partial<RuleCondition>) {
+    setConditions(conditions.map((condition, position) => {
+      if (position !== index) return condition;
+      const next = { ...condition, ...update };
+      if (update.field) { const numeric = fieldMeta(update.field).numeric; next.op = numeric ? ">=" : "contains"; next.value = numeric ? 0 : ""; }
+      return next;
+    }));
   }
-
-  function handleSelectTemplate(code: string) {
-    setRuleInput(code);
-    handleEvaluate(code);
+  async function runScreener() {
+    setLoading(true); setError(null);
+    try { const result = await api.ruleScreener({ logic, conditions, excludeSt, sortBy, sortDirection, page: 1, pageSize: 100 }); setMatchedItems(result.items); setTotal(result.total); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : "规则选股执行失败。"); setMatchedItems([]); setTotal(null); }
+    finally { setLoading(false); }
   }
-
-  function handleCopy() {
-    void navigator.clipboard.writeText(ruleInput);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+  function importJsonRules() {
+    try {
+      const input: unknown = JSON.parse(jsonInput);
+      if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("JSON 顶层必须是一个规则对象。");
+      const rule = input as Partial<RuleScreenerRequest>;
+      if (!Array.isArray(rule.conditions) || rule.conditions.length < 1 || rule.conditions.length > 20) throw new Error("conditions 必须是 1 到 20 条条件的数组。");
+      const imported = rule.conditions.map((condition, index) => {
+        if (!condition || typeof condition !== "object") throw new Error(`第 ${index + 1} 条条件无效。`);
+        const item = condition as Partial<RuleCondition>;
+        const meta = fields.find((field) => field.value === item.field);
+        if (!meta) throw new Error(`第 ${index + 1} 条使用了不支持的字段。`);
+        const allowedOps = meta.numeric ? [">", ">=", "<", "<=", "==", "!="] : ["contains", "==", "!="];
+        if (!item.op || !allowedOps.includes(item.op)) throw new Error(`第 ${index + 1} 条的比较符不适用于 ${meta.label}。`);
+        if (meta.numeric && (typeof item.value !== "number" || !Number.isFinite(item.value))) throw new Error(`第 ${index + 1} 条的 ${meta.label} 必须是数值。`);
+        if (!meta.numeric && (typeof item.value !== "string" || !item.value.trim())) throw new Error(`第 ${index + 1} 条的 ${meta.label} 必须是非空文本。`);
+        return { field: item.field, op: item.op, value: item.value } as RuleCondition;
+      });
+      if (rule.logic && rule.logic !== "AND" && rule.logic !== "OR") throw new Error("logic 只能是 AND 或 OR。");
+      if (rule.sortBy && !["score", "price", "ret20", "turnover", "volatility"].includes(rule.sortBy)) throw new Error("sortBy 不受支持。");
+      if (rule.sortDirection && rule.sortDirection !== "asc" && rule.sortDirection !== "desc") throw new Error("sortDirection 只能是 asc 或 desc。");
+      if (rule.excludeSt !== undefined && typeof rule.excludeSt !== "boolean") throw new Error("excludeSt 必须是 true 或 false。");
+      setConditions(imported); setLogic(rule.logic ?? "AND"); setExcludeSt(rule.excludeSt ?? true);
+      setSortBy(rule.sortBy ?? "score"); setSortDirection(rule.sortDirection ?? "desc");
+      setError(null);
+    } catch (reason) { setError(reason instanceof Error ? `JSON 导入失败：${reason.message}` : "JSON 导入失败。"); }
+  }
+  function copyAiGenerationPrompt() {
+    void navigator.clipboard.writeText(aiGenerationPrompt).then(() => {
+      setPromptCopied(true);
+      window.setTimeout(() => setPromptCopied(false), 2000);
+    }).catch(() => setError("无法写入剪贴板，请手动复制下方生成规范。"));
   }
 
   return (
     <section className="view-container rule-screener-view">
       <div className="section-heading">
         <div>
-          <h2>⚙️ 外部规则选股 & AI 策略解析器</h2>
-          <span>将外部 ChatGPT / DeepSeek 生成的量化条件、JSON 或算式粘贴在此，即刻解析并执行全市场筛选</span>
+          <h2>⚙️ 规则选股</h2>
+          <span>添加选股条件后，系统会在完整市场快照中执行；不受搜索框、分页或当前页面数据影响。</span>
         </div>
         <button
           className="secondary-button export-btn"
-          onClick={() => exportToCsv(parseResult.matchedItems, `策略选股_${parseResult.strategyName}.csv`)}
+          disabled={matchedItems.length === 0}
+          onClick={() => exportToCsv(matchedItems, "规则选股结果.csv")}
         >
           📥 导出策略结果为 CSV
         </button>
       </div>
 
-      {/* Preset Strategy Buttons */}
       <div className="rule-presets-bar">
-        <span className="preset-label">快速套用经典模板：</span>
-        <div className="preset-buttons">
-          {RULE_TEMPLATES.map((tmpl) => (
-            <button
-              key={tmpl.name}
-              className="preset-btn"
-              onClick={() => handleSelectTemplate(tmpl.code)}
-            >
-              {tmpl.name}
-            </button>
-          ))}
-        </div>
+        <span className="preset-label">条件关系</span>
+        <select value={logic} onChange={(event) => setLogic(event.target.value as RuleScreenerRequest["logic"])}><option value="AND">同时满足（AND）</option><option value="OR">满足任一（OR）</option></select>
+        <label className="rule-switch"><input type="checkbox" checked={excludeSt} onChange={(event) => setExcludeSt(event.target.checked)} /> 排除 ST</label>
+        <span className="preset-label">排序</span>
+        <select value={sortBy} onChange={(event) => setSortBy(event.target.value as RuleScreenerRequest["sortBy"])}><option value="score">综合评分</option><option value="ret20">20日涨幅</option><option value="price">最新价</option><option value="turnover">换手率</option><option value="volatility">波动率</option></select>
+        <select value={sortDirection} onChange={(event) => setSortDirection(event.target.value as RuleScreenerRequest["sortDirection"])}><option value="desc">从高到低</option><option value="asc">从低到高</option></select>
       </div>
 
-      {/* Rule Editor Textarea */}
       <div className="rule-editor-box">
-        <textarea
-          className="rule-textarea"
-          value={ruleInput}
-          onChange={(e) => setRuleInput(e.target.value)}
-          placeholder="在此粘贴外部策略规则，支持算式（ret20d > 8 and ma20Slope > 0）、中文条件（20日涨幅 > 8 且 量比 > 1.2）或 JSON 格式..."
-          rows={5}
-        />
+        <details className="rule-json-import">
+          <summary>从 AI 导入 JSON 规则</summary>
+          <p>让 AI 只输出下方格式的 JSON，粘贴后点击导入；导入不会自动执行，便于先检查条件。</p>
+          <details className="rule-ai-spec">
+            <summary>AI 生成规范（字段说明与单位）</summary>
+            <p><strong>量价技术：</strong>5/20 日量比、成交额、5/20 日成交额比、RSI(14)、5/20/60/120/250 日涨幅、MA20 斜率、20/60 日波动率、60 日最大回撤、距 20/60/250 日高低点、250 日价格分位、换手率和最新价。</p>
+            <p><strong>数值运算符：</strong><code>&gt; &gt;= &lt; &lt;= == !=</code>。涨幅、回撤和距离字段均以小数保存，例如 5% 应填写 <code>0.05</code>；成交额单位为元；250 日价格分位范围为 0 至 1。</p>
+            <p><strong>文本：</strong>industry（所属行业）、market（市场）。运算符：<code>contains == !=</code>。</p>
+            <p><strong>规则：</strong>最多 20 条；<code>AND</code> 为同时满足，<code>OR</code> 为任一满足。不得使用未列出的字段、括号、嵌套对象或自然语言条件。</p>
+            <textarea className="rule-ai-prompt" value={aiGenerationPrompt} readOnly rows={12} aria-label="AI 规则生成提示词" />
+            <button className="secondary-button" onClick={copyAiGenerationPrompt}>{promptCopied ? "已复制生成规范" : "复制 AI 生成提示词"}</button>
+          </details>
+          <textarea value={jsonInput} onChange={(event) => setJsonInput(event.target.value)} placeholder={'{"logic":"AND","excludeSt":true,"sortBy":"score","sortDirection":"desc","conditions":[{"field":"score","op":">=","value":70},{"field":"industry","op":"contains","value":"半导体"}]}'} rows={7} />
+          <button className="secondary-button" onClick={importJsonRules}>导入 JSON 到条件编辑器</button>
+          <code>{'{"logic":"AND","excludeSt":true,"sortBy":"score","sortDirection":"desc","conditions":[{"field":"score","op":">=","value":70}]}'}</code>
+        </details>
+        <div className="rule-builder-head"><strong>选股标准</strong><span>最多 20 条；数值字段支持大小比较，行业/市场支持包含或精确匹配。</span></div>
+        {conditions.map((condition, index) => {
+          const meta = fieldMeta(condition.field);
+          const options = meta.numeric ? [">", ">=", "<", "<=", "==", "!="] : ["contains", "==", "!="];
+          return <div className="rule-condition-row" key={`${condition.field}-${index}`}>
+            <span className="rule-condition-index">{index + 1}</span>
+            <select value={condition.field} onChange={(event) => updateCondition(index, { field: event.target.value as RuleCondition["field"] })}>{fields.map((field) => <option key={field.value} value={field.value}>{field.label}</option>)}</select>
+            <select value={condition.op} onChange={(event) => updateCondition(index, { op: event.target.value as RuleCondition["op"] })}>{options.map((op) => <option key={op} value={op}>{op === "contains" ? "包含" : op}</option>)}</select>
+            <input type={meta.numeric ? "number" : "text"} value={condition.value} step="any" placeholder={meta.numeric ? "请输入数值" : "如：半导体"} onChange={(event) => updateCondition(index, { value: meta.numeric ? Number(event.target.value) : event.target.value })} />
+            <button className="text-button clear-btn" disabled={conditions.length === 1} onClick={() => setConditions(conditions.filter((_, position) => position !== index))}>删除</button>
+          </div>;
+        })}
         <div className="rule-editor-actions">
-          <button className="primary-button" onClick={() => handleEvaluate()}>
-            ⚡ 解析并执行规则筛选
-          </button>
-          <button className="secondary-button" onClick={handleCopy}>
-            {copied ? "✓ 已复制到剪贴板" : "📋 复制当前规则"}
-          </button>
-          <button className="text-button clear-btn" onClick={() => { setRuleInput(""); handleEvaluate(""); }}>
-            清空
-          </button>
+          <button className="secondary-button" disabled={conditions.length >= 20} onClick={addCondition}>+ 增加选股标准</button>
+          <button className="primary-button" disabled={loading} onClick={() => void runScreener()}>{loading ? "正在执行…" : "执行全市场选股"}</button>
         </div>
       </div>
 
-      {/* Smart Strategy Diagnostic Card */}
       <div className="strategy-analysis-card">
         <div className="analysis-header">
           <div className="analysis-title">
             <span className="analysis-icon">🧠</span>
-            <strong>AI 策略解析诊断</strong>
-            <span className="strategy-tag">{parseResult.strategyName}</span>
+            <strong>规则执行状态</strong>
+            <span className="strategy-tag">完整市场快照</span>
           </div>
           <div className="match-stats-pill">
-            命中标的：<strong>{parseResult.matchedItems.length}</strong> / {items.length} 
-            <span className="rate">({(parseResult.matchRate * 100).toFixed(1)}% 命中率)</span>
+            命中标的：<strong>{total ?? "—"}</strong>{total !== null && total > matchedItems.length ? `（展示前 ${matchedItems.length} 条）` : ""}
           </div>
         </div>
 
-        <p className="analysis-desc">{parseResult.description}</p>
-
-        {parseResult.conditions.length > 0 && (
-          <div className="conditions-tags-wrap">
-            <span className="tags-label">生效的约束条件：</span>
-            <div className="tags-list">
-              {parseResult.conditions.map((c, i) => (
-                <span key={i} className="cond-pill">
-                  {c.fieldLabel} <strong>{c.op} {c.value}</strong>
-                </span>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {parseResult.errors.length > 0 && (
-          <div className="parse-errors">
-            {parseResult.errors.map((err, i) => (
-              <p key={i} className="error-tip">⚠️ {err}</p>
-            ))}
-          </div>
-        )}
+        <p className="analysis-desc">点击“执行全市场选股”后才会提交规则。搜索、市场热力和 Top10 使用各自的数据源，不会被这里的条件干扰。</p>
+        <div className="conditions-tags-wrap"><span className="tags-label">当前标准：</span><div className="tags-list">{conditions.map((condition, index) => <span className="cond-pill" key={index}>{fieldMeta(condition.field).label} <strong>{condition.op === "contains" ? "包含" : condition.op} {condition.value}</strong></span>)}</div></div>
+        {error && <div className="parse-errors"><p className="error-tip">{error}</p></div>}
       </div>
 
       {/* Results Table */}
@@ -1270,12 +1327,12 @@ function CustomRuleScreenerView({
         <div className="section-heading">
           <div>
             <h3>策略匹配结果清单</h3>
-            <span>共找到 {parseResult.matchedItems.length} 只符合该策略的标的</span>
+            <span>{total === null ? "请先配置并执行选股条件" : `共找到 ${total} 只符合条件的标的`}</span>
           </div>
         </div>
 
         <ScreenerTable
-          items={parseResult.matchedItems}
+          items={matchedItems}
           user={user}
           onAdd={onAdd}
           onSelect={onSelectStock}

@@ -197,6 +197,22 @@ td strong, td small { display: block; }
 .rule-textarea { width: 100%; min-height: 110px; font-family: "Consolas", "Courier New", monospace; font-size: 14px; line-height: 1.5; padding: 12px; background: var(--bg-subtle); border-color: var(--border-color); border-radius: 6px; resize: vertical; }
 .rule-editor-actions { display: flex; gap: 10px; align-items: center; }
 .clear-btn { color: var(--text-sub); font-size: 13px; margin-left: auto; }
+.rule-switch { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-main); }
+.rule-builder-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.rule-builder-head span { font-size: 12px; color: var(--text-sub); }
+.rule-json-import { background: var(--bg-subtle); border: 1px dashed var(--border-color); border-radius: 6px; padding: 10px 12px; }
+.rule-json-import summary { cursor: pointer; color: var(--primary); font-weight: 600; }
+.rule-json-import p { color: var(--text-sub); font-size: 12px; margin: 9px 0; }
+.rule-json-import textarea { width: 100%; box-sizing: border-box; margin: 0 0 8px; padding: 9px; font-family: Consolas, "Courier New", monospace; background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 6px; resize: vertical; }
+.rule-json-import code { display: block; margin-top: 8px; color: var(--text-sub); font-size: 11px; overflow-wrap: anywhere; }
+.rule-ai-spec { margin: 10px 0; padding: 9px; border-left: 3px solid var(--primary); background: var(--bg-card); }
+.rule-ai-spec summary { font-size: 13px; }
+.rule-ai-spec p { line-height: 1.55; }
+.rule-ai-prompt { min-height: 190px; }
+.rule-condition-row { display: grid; grid-template-columns: 28px minmax(130px, 1fr) 92px minmax(150px, 1fr) auto; align-items: center; gap: 8px; }
+.rule-condition-row select, .rule-condition-row input, .rule-presets-bar select { min-height: 34px; padding: 5px 8px; background: var(--bg-subtle); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 6px; }
+.rule-condition-index { color: var(--text-sub); font-size: 12px; text-align: center; }
+@media (max-width: 720px) { .rule-condition-row { grid-template-columns: 24px 1fr 88px; } .rule-condition-row input { grid-column: 2 / span 2; } .rule-condition-row .clear-btn { grid-column: 2 / span 2; margin-left: 0; text-align: left; } }
 
 .strategy-analysis-card { background: rgba(16, 185, 129, 0.08); border: 1px solid rgba(16, 185, 129, 0.25); border-radius: 8px; padding: 18px 22px; display: flex; flex-direction: column; gap: 12px; }
 .analysis-header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; }

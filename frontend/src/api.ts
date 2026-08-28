@@ -100,6 +100,22 @@ export interface ScreenerQuery {
   sortDirection?: string;
 }
 
+export interface RuleCondition {
+  field: "ret5d" | "ret20d" | "ret60d" | "ret120d" | "ret250d" | "ma20Slope" | "volumeRatio5" | "volumeRatio20" | "amount" | "amountRatio5" | "amountRatio20" | "rsi14" | "volatility20" | "volatility60" | "maxDrawdown60" | "distanceHigh20" | "distanceHigh60" | "distanceHigh250" | "distanceLow250" | "pricePercentile250" | "turnoverRate" | "close" | "score" | "industry" | "market";
+  op: ">" | ">=" | "<" | "<=" | "==" | "!=" | "contains";
+  value: number | string;
+}
+
+export interface RuleScreenerRequest {
+  logic: "AND" | "OR";
+  conditions: RuleCondition[];
+  excludeSt: boolean;
+  sortBy: "score" | "price" | "ret20" | "turnover" | "volatility";
+  sortDirection: "asc" | "desc";
+  page?: number;
+  pageSize?: number;
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(path, { credentials: "include", ...options });
   if (!response.ok) {
@@ -119,6 +135,11 @@ export const api = {
     return request<{ items: ScreenerItem[]; total: number; page: number; pageSize: number; asOf: string | null }>(`/api/screener?${params}`);
   },
   marketIndices: () => request<{ items: MarketIndexItem[] }>("/api/market-indices"),
+  marketHeatmap: () => request<{ items: ScreenerItem[] }>("/api/market-heatmap"),
+  top10: () => request<{ items: ScreenerItem[] }>("/api/recommendations/top10"),
+  ruleScreener: (rule: RuleScreenerRequest) => request<{ items: ScreenerItem[]; total: number; page: number; pageSize: number }>("/api/rule-screener", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(rule),
+  }),
   dataRefresh: () => request<{ refresh: DataRefresh | null }>("/api/data-refresh"),
   requestDataRefresh: () => request<{ refresh: DataRefresh }>("/api/data-refresh", { method: "POST" }),
   login: (username: string, password: string) => request<{ user: User }>("/api/auth/login", {

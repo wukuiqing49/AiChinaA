@@ -227,7 +227,7 @@ def build_payload(
     )
     result = result.merge(metadata, on="code", how="left", suffixes=("", "_meta"))
     quote_columns = ["code", "close"]
-    for column in ("pct_change", "turnover_rate"):
+    for column in ("pct_change", "turnover_rate", "amount"):
         if column in quotes.columns:
             quote_columns.append(column)
     quote_latest = quotes.sort_values("trade_date").groupby("code", as_index=False).tail(1)
@@ -273,6 +273,20 @@ def build_payload(
             "ma20Slope": item.get("ma20_slope"),
             "volumeRatio20": item.get("volume_ratio_20"),
             "volatility20": item.get("volatility_20"),
+            "volumeRatio5": item.get("volume_ratio_5"),
+            "amount": item.get("amount"),
+            "amountRatio5": item.get("amount_ratio_5"),
+            "amountRatio20": item.get("amount_ratio_20"),
+            "rsi14": item.get("rsi14"),
+            "ret120d": item.get("ret_120d"),
+            "ret250d": item.get("ret_250d"),
+            "distanceHigh20": item.get("distance_high_20"),
+            "distanceHigh60": item.get("distance_high_60"),
+            "distanceHigh250": item.get("distance_high_250"),
+            "distanceLow250": item.get("distance_low_250"),
+            "pricePercentile250": item.get("price_percentile_250"),
+            "volatility60": item.get("volatility_60"),
+            "maxDrawdown60": item.get("max_drawdown_60"),
         }
         rows.append({key: _json_value(value) for key, value in row.items()})
 
