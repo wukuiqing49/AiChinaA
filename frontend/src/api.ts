@@ -101,7 +101,7 @@ export interface ScreenerQuery {
 }
 
 export interface RuleCondition {
-  field: "ret5d" | "ret20d" | "ret60d" | "ret120d" | "ret250d" | "ma20Slope" | "volumeRatio5" | "volumeRatio20" | "amount" | "amountRatio5" | "amountRatio20" | "rsi14" | "volatility20" | "volatility60" | "maxDrawdown60" | "distanceHigh20" | "distanceHigh60" | "distanceHigh250" | "distanceLow250" | "pricePercentile250" | "turnoverRate" | "close" | "score" | "industry" | "market";
+  field: "ret5d" | "ret20d" | "ret60d" | "ret120d" | "ret250d" | "ma20Slope" | "volumeRatio5" | "volumeRatio20" | "amount" | "amountRatio5" | "amountRatio20" | "rsi14" | "volatility20" | "volatility60" | "maxDrawdown60" | "distanceHigh20" | "distanceHigh60" | "distanceHigh250" | "distanceLow250" | "pricePercentile250" | "turnoverRate" | "close" | "score" | "mainNetInflow" | "mainNetInflowPct" | "superLargeNetInflow" | "largeNetInflow" | "mediumNetInflow" | "smallNetInflow" | "mainNetInflow3d" | "mainNetInflow5d" | "mainNetInflow10d" | "industry" | "market";
   op: ">" | ">=" | "<" | "<=" | "==" | "!=" | "contains";
   value: number | string;
 }

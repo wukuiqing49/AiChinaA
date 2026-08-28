@@ -76,6 +76,12 @@ jobs:
         run: |
           python -m pipeline.jobs.publish_screener --input reports/screener-publish.json
 
+      - name: Fetch and publish stock money flow
+        continue-on-error: true
+        run: |
+          python -m pipeline.jobs.fetch_fund_flow --output data/realtime/fund-flow.json
+          python -m pipeline.jobs.publish_fund_flow --input data/realtime/fund-flow.json
+
       - name: Create and upload refreshed snapshot
         run: |
           python -m pipeline.jobs.snapshot_history --output data/snapshots/historical-current.zip

@@ -248,6 +248,13 @@ class AkShareProvider:
             "akshare/ths",
         )
 
+    def get_individual_fund_flow_rank(self, indicator: str) -> pd.DataFrame:
+        """Return the all-market stock money-flow ranking for one lookback window."""
+        return self._tag_source(
+            self._call("stock_individual_fund_flow_rank")(indicator=indicator),
+            "akshare/eastmoney",
+        )
+
     def normalize_daily_quotes(self, frame: pd.DataFrame, code: str) -> pd.DataFrame:
         required_columns = {
             "日期": "trade_date",
