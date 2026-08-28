@@ -6,6 +6,7 @@ compatibility_date = "2026-08-26"
 GITHUB_OWNER = "wukuiqing49"
 GITHUB_REPOSITORY = "AiChinaA"
 GITHUB_WORKFLOW = "daily_pipeline.yml"
+ADMIN_USERNAMES = "wukuiqing"
 
 [[d1_databases]]
 binding = "DB"
