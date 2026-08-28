@@ -48,6 +48,7 @@ const screenerPublishSchema = z.object({
     tradeDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
     quoteDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable(),
     quoteTime: z.string().regex(/^\d{2}:\d{2}:\d{2}$/).nullable(),
+    quoteSource: z.enum(["tencent", "sina"]).nullable(),
     close: z.number().positive().nullable(),
     scoreTotal: z.number().min(0).max(100).nullable(),
     dataCompleteness: z.number().min(0).max(1).nullable(),
@@ -68,6 +69,7 @@ const screenerPublishSchema = z.object({
     tradeDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
     quoteDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable(),
     quoteTime: z.string().regex(/^\d{2}:\d{2}:\d{2}$/).nullable(),
+    quoteSource: z.enum(["tencent", "sina"]).nullable(),
     close: z.number().positive().nullable(),
     pctChange: z.number().nullable(),
     ret20d: z.number().nullable(),
@@ -84,6 +86,7 @@ app.get("/api/screener", async (context) => {
     return context.json({ error: "筛选条件无效。", details: parsed.error.flatten() }, 400);
   }
   const query = parsed.data;
+  const identitySearch = Boolean(query.code || query.name);
   const conditions: string[] = [];
   const bindings: (string | number)[] = [];
   if (query.code) {
@@ -94,29 +97,29 @@ app.get("/api/screener", async (context) => {
     conditions.push("s.name LIKE ?");
     bindings.push(`%${query.name}%`);
   }
-  if (query.instrumentType) {
+  if (!identitySearch && query.instrumentType) {
     conditions.push("s.instrument_type = ?");
     bindings.push(query.instrumentType);
   }
-  if (query.market) {
+  if (!identitySearch && query.market) {
     conditions.push("d.market = ?");
     bindings.push(query.market);
   }
-  if (query.industry) {
+  if (!identitySearch && query.industry) {
     conditions.push("d.industry LIKE ?");
     bindings.push(`%${query.industry}%`);
   }
-  addRange(conditions, bindings, "s.close", query.minPrice, query.maxPrice);
-  addRange(conditions, bindings, "d.ret_20d", query.minRet20, query.maxRet20);
-  if (query.minTurnover !== undefined) {
+  if (!identitySearch) addRange(conditions, bindings, "s.close", query.minPrice, query.maxPrice);
+  if (!identitySearch) addRange(conditions, bindings, "d.ret_20d", query.minRet20, query.maxRet20);
+  if (!identitySearch && query.minTurnover !== undefined) {
     conditions.push("d.turnover_rate >= ?");
     bindings.push(query.minTurnover);
   }
-  if (query.maxVolatility !== undefined) {
+  if (!identitySearch && query.maxVolatility !== undefined) {
     conditions.push("d.volatility_20 <= ?");
     bindings.push(query.maxVolatility);
   }
-  if (query.minScore !== undefined) {
+  if (!identitySearch && query.minScore !== undefined) {
     conditions.push("s.score_total >= ?");
     bindings.push(query.minScore);
   }
@@ -138,7 +141,7 @@ app.get("/api/screener", async (context) => {
      ${where}`;
   const [rows, count, asOf] = await Promise.all([
     context.env.DB.prepare(
-      `SELECT s.code, s.name, s.instrument_type, s.trade_date, s.quote_date, s.quote_time,
+      `SELECT s.code, s.name, s.instrument_type, s.trade_date, s.quote_date, s.quote_time, s.quote_source,
               s.close, s.score_total, s.data_completeness,
               d.market, d.industry, d.pct_change, d.turnover_rate, d.ret_5d, d.ret_20d,
               d.ret_60d, d.ma20_slope, d.volume_ratio_20, d.volatility_20
@@ -166,7 +169,7 @@ app.get("/api/screener", async (context) => {
 
 app.get("/api/market-indices", async (context) => {
   const rows = await context.env.DB.prepare(
-    `SELECT code, name, trade_date, quote_date, quote_time, close, pct_change,
+    `SELECT code, name, trade_date, quote_date, quote_time, quote_source, close, pct_change,
             ret_20d, ma20_slope, volatility_20
        FROM market_index_latest
       ORDER BY code ASC`,
@@ -248,14 +251,14 @@ app.post("/api/internal/publish-screener", async (context) => {
       ...stocks.flatMap((stock) => [
       context.env.DB.prepare(
         `INSERT INTO stock_latest (
-           code, name, instrument_type, trade_date, quote_date, quote_time, close,
+           code, name, instrument_type, trade_date, quote_date, quote_time, quote_source, close,
            score_total, data_completeness, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(code) DO UPDATE SET name = excluded.name, instrument_type = excluded.instrument_type, trade_date = excluded.trade_date,
-           quote_date = excluded.quote_date, quote_time = excluded.quote_time,
+           quote_date = excluded.quote_date, quote_time = excluded.quote_time, quote_source = excluded.quote_source,
            close = excluded.close, score_total = excluded.score_total,
            data_completeness = excluded.data_completeness, updated_at = excluded.updated_at`,
-      ).bind(stock.code, stock.name, stock.instrumentType, stock.tradeDate, stock.quoteDate, stock.quoteTime, stock.close, stock.scoreTotal, stock.dataCompleteness, startedAt),
+      ).bind(stock.code, stock.name, stock.instrumentType, stock.tradeDate, stock.quoteDate, stock.quoteTime, stock.quoteSource, stock.close, stock.scoreTotal, stock.dataCompleteness, startedAt),
       context.env.DB.prepare(
         `INSERT INTO stock_screen_latest (
            code, trade_date, market, industry, pct_change, turnover_rate, ret_5d, ret_20d,
@@ -270,14 +273,14 @@ app.post("/api/internal/publish-screener", async (context) => {
       ]),
       ...indices.map((index) => context.env.DB.prepare(
         `INSERT INTO market_index_latest (
-           code, name, trade_date, quote_date, quote_time, close, pct_change,
+           code, name, trade_date, quote_date, quote_time, quote_source, close, pct_change,
            ret_20d, ma20_slope, volatility_20, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(code) DO UPDATE SET name = excluded.name, trade_date = excluded.trade_date,
-           quote_date = excluded.quote_date, quote_time = excluded.quote_time,
+           quote_date = excluded.quote_date, quote_time = excluded.quote_time, quote_source = excluded.quote_source,
            close = excluded.close, pct_change = excluded.pct_change, ret_20d = excluded.ret_20d,
            ma20_slope = excluded.ma20_slope, volatility_20 = excluded.volatility_20, updated_at = excluded.updated_at`,
-      ).bind(index.code, index.name, index.tradeDate, index.quoteDate, index.quoteTime, index.close, index.pctChange, index.ret20d, index.ma20Slope, index.volatility20, startedAt)),
+      ).bind(index.code, index.name, index.tradeDate, index.quoteDate, index.quoteTime, index.quoteSource, index.close, index.pctChange, index.ret20d, index.ma20Slope, index.volatility20, startedAt)),
     ];
     for (let index = 0; index < statements.length; index += 100) {
       await context.env.DB.batch(statements.slice(index, index + 100));
@@ -494,6 +497,7 @@ interface ScreenerRow {
   trade_date: string;
   quote_date: string | null;
   quote_time: string | null;
+  quote_source: "tencent" | "sina" | null;
   close: number | null;
   score_total: number | null;
   data_completeness: number | null;
@@ -535,6 +539,7 @@ interface MarketIndexRow {
   trade_date: string;
   quote_date: string | null;
   quote_time: string | null;
+  quote_source: "tencent" | "sina" | null;
   close: number | null;
   pct_change: number | null;
   ret_20d: number | null;
@@ -567,6 +572,7 @@ function toScreenerItem(row: ScreenerRow) {
     tradeDate: row.trade_date,
     quoteDate: row.quote_date,
     quoteTime: row.quote_time,
+    quoteSource: row.quote_source,
     close: row.close,
     score: row.score_total,
     dataCompleteness: row.data_completeness,
@@ -590,6 +596,7 @@ function toMarketIndexItem(row: MarketIndexRow) {
     tradeDate: row.trade_date,
     quoteDate: row.quote_date,
     quoteTime: row.quote_time,
+    quoteSource: row.quote_source,
     close: row.close,
     pctChange: row.pct_change,
     ret20d: row.ret_20d,

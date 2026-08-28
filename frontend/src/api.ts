@@ -50,6 +50,7 @@ export interface ScreenerItem {
   tradeDate: string;
   quoteDate: string | null;
   quoteTime: string | null;
+  quoteSource: "tencent" | "sina" | null;
   close: number | null;
   score: number | null;
   dataCompleteness: number | null;
@@ -71,6 +72,7 @@ export interface MarketIndexItem {
   tradeDate: string;
   quoteDate: string | null;
   quoteTime: string | null;
+  quoteSource: "tencent" | "sina" | null;
   close: number | null;
   pctChange: number | null;
   ret20d: number | null;

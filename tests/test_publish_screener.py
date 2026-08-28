@@ -23,6 +23,7 @@ def test_load_payload_accepts_valid_row(tmp_path):
         "tradeDate": "2026-08-25",
         "quoteDate": None,
         "quoteTime": None,
+        "quoteSource": None,
         "close": 10,
         "scoreTotal": 80,
         "dataCompleteness": 1, "market": "SH", "industry": "Test", "pctChange": 1,

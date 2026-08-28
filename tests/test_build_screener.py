@@ -66,6 +66,7 @@ def test_realtime_quotes_use_typed_keys_and_preserve_history_date(tmp_path) -> N
                 "pctChange": 0,
                 "quoteDate": None,
                 "quoteTime": None,
+                "quoteSource": None,
             }
         ],
         "indices": [
@@ -76,6 +77,7 @@ def test_realtime_quotes_use_typed_keys_and_preserve_history_date(tmp_path) -> N
                 "pctChange": 0,
                 "quoteDate": None,
                 "quoteTime": None,
+                "quoteSource": None,
             }
         ],
     }

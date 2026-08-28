@@ -223,6 +223,28 @@ export default function App() {
     return () => clearInterval(timer);
   }, [filters, loadMarketIndices, loadRecommendations, loadRefresh, loadScreen, loadUser, page]);
 
+  useEffect(() => {
+    const code = selectedStock?.code;
+    if (!code) return;
+    let active = true;
+    const refreshDetail = async () => {
+      try {
+        const result = await api.screener({ code, page: 1, pageSize: 1 });
+        const latest = result.items[0];
+        if (active && latest) {
+          setSelectedStock((current) => (current?.code === code ? latest : current));
+        }
+      } catch {
+        // Keep the last known detail data if a polling request fails.
+      }
+    };
+    const timer = setInterval(() => void refreshDetail(), 30000);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [selectedStock?.code]);
+
   function handleSelectStock(stock: ScreenerItem, fullScreen = false) {
     setSelectedStock(stock);
     setIsFullScreenDetail(fullScreen);
@@ -585,6 +607,7 @@ export default function App() {
                     tradeDate: w.latestTradeDate,
                     quoteDate: null,
                     quoteTime: null,
+                    quoteSource: null,
                     close: w.latestClose,
                     score: w.scoreTotal,
                     dataCompleteness: 1,
@@ -1012,6 +1035,7 @@ function RecommendationsView({
           tradeDate: r.latestTradeDate,
           quoteDate: null,
           quoteTime: null,
+          quoteSource: null,
           close: r.latestClose,
           score: r.score,
           dataCompleteness: 1,

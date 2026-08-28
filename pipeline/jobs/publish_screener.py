@@ -14,6 +14,7 @@ REQUIRED_STOCK_FIELDS = {
     "tradeDate",
     "quoteDate",
     "quoteTime",
+    "quoteSource",
     "close",
     "scoreTotal",
     "dataCompleteness",

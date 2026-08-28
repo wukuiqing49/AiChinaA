@@ -147,6 +147,7 @@ def _build_index_payload(data_dir: Path) -> list[dict[str, object]]:
                 "tradeDate": str(item["trade_date"]),
                 "quoteDate": None,
                 "quoteTime": None,
+                "quoteSource": None,
                 "close": _json_value(item.get("close_quote", item.get("close"))),
                 "pctChange": _json_value(item.get("pct_change_quote", item.get("pct_change"))),
                 "ret20d": _json_value(item.get("ret_20d")),
@@ -242,6 +243,7 @@ def build_payload(
             "tradeDate": str(item["trade_date"]),
             "quoteDate": None,
             "quoteTime": None,
+            "quoteSource": None,
             "close": (
                 item.get("close_quote")
                 if item.get("close_quote") is not None
@@ -326,6 +328,7 @@ def _apply_realtime_quotes(
             row["pctChange"] = quote.get("pctChange")
             row["quoteDate"] = quote.get("quoteDate")
             row["quoteTime"] = quote.get("quoteTime")
+            row["quoteSource"] = quote.get("quoteSource")
             if is_index:
                 try:
                     history_lag = (
