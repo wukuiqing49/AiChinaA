@@ -63,7 +63,7 @@ Invoke-Step "Repair instrument names" {
 }
 
 Invoke-Step "Download incremental history including ST stocks" {
-    & $python -m pipeline.jobs.download_history --data-dir data/historical --incremental --workers $Workers
+    & $python -m pipeline.jobs.download_history --data-dir data/historical --incremental --st-only --workers $Workers
 }
 
 Invoke-Step "Fetch realtime quotes with Tencent/Sina fallback" {

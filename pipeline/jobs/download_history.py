@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, date, datetime
@@ -211,6 +212,7 @@ def run_download(
     workers: int = 4,
     force_refresh: bool = False,
     incremental: bool = False,
+    st_only: bool = False,
 ) -> dict[str, object]:
     checkpoint_file = data_dir / "checkpoints.json"
     checkpoints = {} if force_refresh else _load_checkpoints(checkpoint_file)
@@ -221,6 +223,14 @@ def run_download(
         include_etfs=include_etfs,
         include_indices=include_indices,
     )
+
+    if st_only:
+        st_pattern = re.compile(r"(?:\*?ST|退市|PT)", flags=re.IGNORECASE)
+        target_items = [
+            item
+            for item in target_items
+            if item[2] == "stock" and st_pattern.search(str(item[1]))
+        ]
 
     if max_items > 0:
         target_items = target_items[:max_items]
@@ -342,6 +352,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Incremental daily update mode: only fetch new daily bars since last saved date",
     )
+    parser.add_argument(
+        "--st-only",
+        action="store_true",
+        help="Only download stocks whose current name indicates ST, delisting, or PT status",
+    )
     return parser.parse_args()
 
 
@@ -364,6 +379,7 @@ def main() -> int:
         max_items=args.max_items,
         force_refresh=args.force,
         incremental=args.incremental,
+        st_only=args.st_only,
     )
     print(f"\nDownload finished: {summary}")
     return 0
