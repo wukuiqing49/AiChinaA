@@ -47,6 +47,7 @@ export interface ScreenerItem {
   code: string;
   name: string;
   instrumentType: "stock" | "etf";
+  isSt: boolean;
   tradeDate: string;
   quoteDate: string | null;
   quoteTime: string | null;

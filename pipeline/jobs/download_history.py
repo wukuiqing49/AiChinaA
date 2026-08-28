@@ -145,7 +145,7 @@ def _target_items(
                 items = pd.DataFrame({"code": clean_codes})
                 items["name"] = raw_list[name_col].astype(str) if name_col else items["code"]
                 items = filter_universe(
-                    items, allow_stocks=True, allow_etfs=False, exclude_st=True
+                    items, allow_stocks=True, allow_etfs=False, exclude_st=False
                 )
                 for _, row in items.iterrows():
                     code = row["code"]

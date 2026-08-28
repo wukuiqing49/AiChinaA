@@ -11,6 +11,7 @@ REQUIRED_STOCK_FIELDS = {
     "code",
     "name",
     "instrumentType",
+    "isSt",
     "tradeDate",
     "quoteDate",
     "quoteTime",

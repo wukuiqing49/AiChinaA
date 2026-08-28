@@ -49,6 +49,7 @@ const screenerPublishSchema = z.object({
     code: z.string().regex(/^\d{6}$/),
     name: z.string().min(1).max(80),
     instrumentType: z.enum(["stock", "etf"]),
+    isSt: z.boolean(),
     tradeDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
     quoteDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable(),
     quoteTime: z.string().regex(/^\d{2}:\d{2}:\d{2}$/).nullable(),
@@ -107,6 +108,9 @@ app.get("/api/screener", async (context) => {
     conditions.push("s.instrument_type = ?");
     bindings.push(query.instrumentType);
   }
+  if (!identitySearch) {
+    conditions.push("s.is_st = 0");
+  }
   if (!identitySearch && query.market) {
     conditions.push("d.market = ?");
     bindings.push(query.market);
@@ -147,7 +151,7 @@ app.get("/api/screener", async (context) => {
      ${where}`;
   const [rows, count, asOf] = await Promise.all([
     context.env.DB.prepare(
-      `SELECT s.code, s.name, s.instrument_type, s.trade_date, s.quote_date, s.quote_time, s.quote_source,
+      `SELECT s.code, s.name, s.instrument_type, s.is_st, s.trade_date, s.quote_date, s.quote_time, s.quote_source,
               s.close, s.score_total, s.data_completeness,
               d.market, d.industry, d.pct_change, d.turnover_rate, d.ret_5d, d.ret_20d,
               d.ret_60d, d.ma20_slope, d.volume_ratio_20, d.volatility_20
@@ -257,14 +261,14 @@ app.post("/api/internal/publish-screener", async (context) => {
       ...stocks.flatMap((stock) => [
       context.env.DB.prepare(
         `INSERT INTO stock_latest (
-           code, name, instrument_type, trade_date, quote_date, quote_time, quote_source, close,
+           code, name, instrument_type, is_st, trade_date, quote_date, quote_time, quote_source, close,
            score_total, data_completeness, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(code) DO UPDATE SET name = excluded.name, instrument_type = excluded.instrument_type, trade_date = excluded.trade_date,
-           quote_date = excluded.quote_date, quote_time = excluded.quote_time, quote_source = excluded.quote_source,
+           is_st = excluded.is_st, quote_date = excluded.quote_date, quote_time = excluded.quote_time, quote_source = excluded.quote_source,
            close = excluded.close, score_total = excluded.score_total,
            data_completeness = excluded.data_completeness, updated_at = excluded.updated_at`,
-      ).bind(stock.code, stock.name, stock.instrumentType, stock.tradeDate, stock.quoteDate, stock.quoteTime, stock.quoteSource, stock.close, stock.scoreTotal, stock.dataCompleteness, startedAt),
+      ).bind(stock.code, stock.name, stock.instrumentType, stock.isSt ? 1 : 0, stock.tradeDate, stock.quoteDate, stock.quoteTime, stock.quoteSource, stock.close, stock.scoreTotal, stock.dataCompleteness, startedAt),
       context.env.DB.prepare(
         `INSERT INTO stock_screen_latest (
            code, trade_date, market, industry, pct_change, turnover_rate, ret_5d, ret_20d,
@@ -500,6 +504,7 @@ interface ScreenerRow {
   code: string;
   name: string;
   instrument_type: "stock" | "etf";
+  is_st: number;
   trade_date: string;
   quote_date: string | null;
   quote_time: string | null;
@@ -575,6 +580,7 @@ function toScreenerItem(row: ScreenerRow) {
     code: row.code,
     name: row.name,
     instrumentType: row.instrument_type,
+    isSt: row.is_st === 1,
     tradeDate: row.trade_date,
     quoteDate: row.quote_date,
     quoteTime: row.quote_time,

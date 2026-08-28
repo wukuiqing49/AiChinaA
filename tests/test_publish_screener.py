@@ -20,6 +20,7 @@ def test_load_payload_accepts_valid_row(tmp_path):
         "code": "600001",
         "name": "Alpha",
         "instrumentType": "stock",
+        "isSt": False,
         "tradeDate": "2026-08-25",
         "quoteDate": None,
         "quoteTime": None,

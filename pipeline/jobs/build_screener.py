@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
 import time
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -42,7 +43,8 @@ def _normalize_codes(stock_list: pd.DataFrame) -> pd.DataFrame:
         source = _column(stock_list, names)
         output[target] = pd.to_numeric(stock_list[source], errors="coerce") if source else None
     output = output[output["code"].str.match(r"^\d{6}$")]
-    output = filter_universe(output, allow_stocks=True, allow_etfs=True, exclude_st=True)
+    output = filter_universe(output, allow_stocks=True, allow_etfs=True, exclude_st=False)
+    output["is_st"] = output["name"].str.contains(r"(?:\*?ST|退市|PT)", case=False, regex=True)
     output["instrument_type"] = output.apply(
         lambda row: classify_instrument(row["code"], row["name"]), axis=1
     )
@@ -241,6 +243,7 @@ def build_payload(
             "code": code,
             "name": str(item.get("name") or code),
             "instrumentType": str(item.get("instrument_type") or classify_instrument(code)),
+            "isSt": bool(item.get("is_st", False)),
             "tradeDate": str(item["trade_date"]),
             "quoteDate": None,
             "quoteTime": None,
@@ -342,6 +345,9 @@ def _apply_realtime_quotes(
             row["pctChange"] = quote.get("pctChange")
             if _usable_quote_name(quote.get("name"), str(row.get("code"))):
                 row["name"] = _normalize_quote_name(quote["name"])
+                row["isSt"] = bool(
+                    re.search(r"(?:\*?ST|退市|PT)", row["name"], flags=re.IGNORECASE)
+                )
             row["quoteDate"] = quote.get("quoteDate")
             row["quoteTime"] = quote.get("quoteTime")
             row["quoteSource"] = quote.get("quoteSource")
