@@ -300,6 +300,10 @@ def _usable_quote_name(value: object, code: str) -> bool:
     )
 
 
+def _normalize_quote_name(value: object) -> str:
+    return "".join(str(value).split())
+
+
 def _apply_realtime_quotes(
     payload: dict[str, object], quote_file: Path, *, now: datetime | None = None
 ) -> None:
@@ -336,7 +340,7 @@ def _apply_realtime_quotes(
             row["close"] = quote.get("close")
             row["pctChange"] = quote.get("pctChange")
             if _usable_quote_name(quote.get("name"), str(row.get("code"))):
-                row["name"] = str(quote["name"]).strip()
+                row["name"] = _normalize_quote_name(quote["name"])
             row["quoteDate"] = quote.get("quoteDate")
             row["quoteTime"] = quote.get("quoteTime")
             row["quoteSource"] = quote.get("quoteSource")

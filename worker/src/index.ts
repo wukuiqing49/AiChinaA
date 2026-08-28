@@ -94,8 +94,8 @@ app.get("/api/screener", async (context) => {
     bindings.push(query.code.length === 6 ? query.code : `%${query.code}%`);
   }
   if (query.name) {
-    conditions.push("s.name LIKE ?");
-    bindings.push(`%${query.name}%`);
+    conditions.push("REPLACE(REPLACE(REPLACE(s.name, ' ', ''), '　', ''), char(9), '') LIKE ?");
+    bindings.push(`%${query.name.replace(/\s+/g, "")}%`);
   }
   if (!identitySearch && query.instrumentType) {
     conditions.push("s.instrument_type = ?");
