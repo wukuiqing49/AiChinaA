@@ -84,7 +84,7 @@ app.get("/api/screener", async (context) => {
   const bindings: (string | number)[] = [];
   if (query.code) {
     conditions.push("s.code LIKE ?");
-    bindings.push(`${query.code}%`);
+    bindings.push(query.code.length === 6 ? query.code : `%${query.code}%`);
   }
   if (query.name) {
     conditions.push("s.name LIKE ?");
@@ -127,10 +127,8 @@ app.get("/api/screener", async (context) => {
   const orderDirection = query.sortDirection === "asc" ? "ASC" : "DESC";
   const offset = (query.page - 1) * query.pageSize;
   const baseSql = `FROM stock_latest s
-    LEFT JOIN stock_screen_latest d ON d.code = s.code
-    JOIN (SELECT trade_date FROM sync_runs WHERE status = 'completed' ORDER BY trade_date DESC LIMIT 1) current
-      ON current.trade_date = s.trade_date
-    ${where}`;
+     LEFT JOIN stock_screen_latest d ON d.code = s.code
+     ${where}`;
   const [rows, count, asOf] = await Promise.all([
     context.env.DB.prepare(
       `SELECT s.code, s.name, s.instrument_type, s.trade_date, s.close, s.score_total, s.data_completeness,
