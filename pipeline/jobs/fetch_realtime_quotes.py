@@ -61,6 +61,7 @@ def parse_tencent_response(
         quotes[key] = {
             "code": code,
             "instrumentType": instrument_type,
+            "name": fields[1].strip(),
             "close": close,
             "pctChange": round((close / previous - 1) * 100, 6),
             "quoteDate": f"{stamp[:4]}-{stamp[4:6]}-{stamp[6:8]}",
@@ -95,6 +96,7 @@ def parse_sina_response(
         quotes[key] = {
             "code": code,
             "instrumentType": instrument_type,
+            "name": fields[0].strip(),
             "close": close,
             "pctChange": round((close / previous - 1) * 100, 6),
             "quoteDate": fields[30],

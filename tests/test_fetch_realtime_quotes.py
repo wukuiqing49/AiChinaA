@@ -3,6 +3,7 @@ from pipeline.jobs.fetch_realtime_quotes import parse_tencent_response
 
 def _line(symbol: str, code: str, close: str, previous: str, timestamp: str) -> str:
     fields = [""] * 31
+    fields[1] = "示例名称"
     fields[2] = code
     fields[3] = close
     fields[4] = previous
@@ -28,6 +29,7 @@ def test_parse_tencent_response_keeps_stock_and_index_keys_separate() -> None:
     assert quotes["index:sh000001"]["close"] == 3900
     assert quotes["stock:000001"]["quoteDate"] == "2026-08-28"
     assert quotes["stock:000001"]["quoteTime"] == "14:59:59"
+    assert quotes["stock:000001"]["name"] == "示例名称"
 
 
 def test_parse_sina_response_normalizes_backup_source() -> None:
@@ -36,6 +38,7 @@ def test_parse_sina_response_normalizes_backup_source() -> None:
     fields = [""] * 32
     fields[2] = "12.00"
     fields[3] = "12.50"
+    fields[0] = "示例名称"
     fields[30] = "2026-08-28"
     fields[31] = "15:00:00"
     body = f'hq_str_sz000001="{",".join(fields)}";'
@@ -46,3 +49,4 @@ def test_parse_sina_response_normalizes_backup_source() -> None:
 
     assert quotes["stock:000001"]["close"] == 12.5
     assert quotes["stock:000001"]["quoteSource"] == "sina"
+    assert quotes["stock:000001"]["name"] == "示例名称"

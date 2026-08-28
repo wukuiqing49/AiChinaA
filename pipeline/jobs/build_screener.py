@@ -291,6 +291,15 @@ def _json_value(value: object) -> object:
     return value
 
 
+def _usable_quote_name(value: object, code: str) -> bool:
+    return (
+        isinstance(value, str)
+        and bool(value.strip())
+        and value.strip() != code
+        and "�" not in value
+    )
+
+
 def _apply_realtime_quotes(
     payload: dict[str, object], quote_file: Path, *, now: datetime | None = None
 ) -> None:
@@ -326,6 +335,8 @@ def _apply_realtime_quotes(
                 continue
             row["close"] = quote.get("close")
             row["pctChange"] = quote.get("pctChange")
+            if _usable_quote_name(quote.get("name"), str(row.get("code"))):
+                row["name"] = str(quote["name"]).strip()
             row["quoteDate"] = quote.get("quoteDate")
             row["quoteTime"] = quote.get("quoteTime")
             row["quoteSource"] = quote.get("quoteSource")
