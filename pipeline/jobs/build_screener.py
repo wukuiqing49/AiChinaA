@@ -4,6 +4,7 @@ import argparse
 import json
 import math
 import time
+import unicodedata
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -301,7 +302,7 @@ def _usable_quote_name(value: object, code: str) -> bool:
 
 
 def _normalize_quote_name(value: object) -> str:
-    return "".join(str(value).split())
+    return unicodedata.normalize("NFKC", "".join(str(value).split()))
 
 
 def _apply_realtime_quotes(

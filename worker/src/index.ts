@@ -8,6 +8,10 @@ import { calculateObservationTracking } from "./tracking";
 import type { Env, LatestStock, SessionUser } from "./types";
 
 const app = new Hono<{ Bindings: Env }>();
+
+function normalizeSearchTerm(value: string): string {
+  return value.normalize("NFKC").toLocaleLowerCase().replace(/\s+/gu, "");
+}
 const addWatchlistSchema = z.object({ code: z.string().regex(/^\d{6}$/) });
 const loginSchema = z.object({
   username: z.string().regex(/^[A-Za-z0-9._-]{3,32}$/),
@@ -94,8 +98,10 @@ app.get("/api/screener", async (context) => {
     bindings.push(query.code.length === 6 ? query.code : `%${query.code}%`);
   }
   if (query.name) {
-    conditions.push("REPLACE(REPLACE(REPLACE(s.name, ' ', ''), '　', ''), char(9), '') LIKE ?");
-    bindings.push(`%${query.name.replace(/\s+/g, "")}%`);
+    conditions.push(
+      "LOWER(REPLACE(REPLACE(REPLACE(s.name, ' ', ''), '　', ''), char(9), '')) LIKE ?",
+    );
+    bindings.push(`%${normalizeSearchTerm(query.name)}%`);
   }
   if (!identitySearch && query.instrumentType) {
     conditions.push("s.instrument_type = ?");
