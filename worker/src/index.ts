@@ -466,8 +466,14 @@ app.post("/api/internal/publish-fund-flow", async (context) => {
        main_net_inflow_3d=excluded.main_net_inflow_3d, main_net_inflow_5d=excluded.main_net_inflow_5d,
        main_net_inflow_10d=excluded.main_net_inflow_10d, updated_at=excluded.updated_at`,
   ).bind(row.code, dataDate, source, row.mainNetInflow, row.mainNetInflowPct, row.superLargeNetInflow, row.largeNetInflow, row.mediumNetInflow, row.smallNetInflow, row.mainNetInflow3d, row.mainNetInflow5d, row.mainNetInflow10d, now, row.code));
+  const dailyStatements = rows.map((row) => context.env.DB.prepare(
+    `INSERT INTO stock_money_flow_daily (code, data_date, source, main_net_inflow, main_net_inflow_pct, super_large_net_inflow, large_net_inflow, medium_net_inflow, small_net_inflow, main_net_inflow_3d, main_net_inflow_5d, main_net_inflow_10d, fetched_at)
+     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM stock_latest WHERE code = ?)
+     ON CONFLICT(code, data_date) DO UPDATE SET source=excluded.source, main_net_inflow=excluded.main_net_inflow, main_net_inflow_pct=excluded.main_net_inflow_pct, super_large_net_inflow=excluded.super_large_net_inflow, large_net_inflow=excluded.large_net_inflow, medium_net_inflow=excluded.medium_net_inflow, small_net_inflow=excluded.small_net_inflow, main_net_inflow_3d=excluded.main_net_inflow_3d, main_net_inflow_5d=excluded.main_net_inflow_5d, main_net_inflow_10d=excluded.main_net_inflow_10d, fetched_at=excluded.fetched_at`,
+  ).bind(row.code, dataDate, source, row.mainNetInflow, row.mainNetInflowPct, row.superLargeNetInflow, row.largeNetInflow, row.mediumNetInflow, row.smallNetInflow, row.mainNetInflow3d, row.mainNetInflow5d, row.mainNetInflow10d, now, row.code));
   try {
-    for (let index = 0; index < statements.length; index += 100) await context.env.DB.batch(statements.slice(index, index + 100));
+    const allStatements = [...statements, ...dailyStatements];
+    for (let index = 0; index < allStatements.length; index += 100) await context.env.DB.batch(allStatements.slice(index, index + 100));
     return context.json({ status: "completed", rowCount: rows.length, dataDate, source });
   } catch (error) {
     return context.json({ error: error instanceof Error ? error.message.slice(0, 500) : "资金流保存失败。" }, 500);
@@ -485,7 +491,12 @@ app.post("/api/internal/publish-valuation", async (context) => {
      SELECT ?, ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM stock_latest WHERE code = ?)
      ON CONFLICT(code) DO UPDATE SET data_date=excluded.data_date, source=excluded.source, pe_ttm=excluded.pe_ttm, pb=excluded.pb, total_market_cap=excluded.total_market_cap, float_market_cap=excluded.float_market_cap, updated_at=excluded.updated_at`,
   ).bind(row.code, dataDate, source, row.peTtm, row.pb, row.totalMarketCap, row.floatMarketCap, now, row.code));
-  try { for (let index = 0; index < statements.length; index += 100) await context.env.DB.batch(statements.slice(index, index + 100)); return context.json({ status: "completed", rowCount: rows.length, dataDate, source }); }
+  const dailyStatements = rows.map((row) => context.env.DB.prepare(
+    `INSERT INTO stock_valuation_daily (code, data_date, source, pe_ttm, pb, total_market_cap, float_market_cap, fetched_at)
+     SELECT ?, ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM stock_latest WHERE code = ?)
+     ON CONFLICT(code, data_date) DO UPDATE SET source=excluded.source, pe_ttm=excluded.pe_ttm, pb=excluded.pb, total_market_cap=excluded.total_market_cap, float_market_cap=excluded.float_market_cap, fetched_at=excluded.fetched_at`,
+  ).bind(row.code, dataDate, source, row.peTtm, row.pb, row.totalMarketCap, row.floatMarketCap, now, row.code));
+  try { const allStatements = [...statements, ...dailyStatements]; for (let index = 0; index < allStatements.length; index += 100) await context.env.DB.batch(allStatements.slice(index, index + 100)); return context.json({ status: "completed", rowCount: rows.length, dataDate, source }); }
   catch (error) { return context.json({ error: error instanceof Error ? error.message.slice(0, 500) : "估值保存失败。" }, 500); }
 });
 
