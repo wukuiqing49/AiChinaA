@@ -82,7 +82,11 @@ jobs:
         if: ${{ github.event_name == 'workflow_dispatch' || github.event.schedule == '35 7 * * 1' }}
         continue-on-error: true
         run: |
-          python -m pipeline.jobs.fetch_industry_map --output data/realtime/industry-map.json
+          for attempt in 1 2 3; do
+            python -m pipeline.jobs.fetch_industry_map --output data/realtime/industry-map.json && break
+            if [ "$attempt" = 3 ]; then exit 1; fi
+            sleep 20
+          done
           python -m pipeline.jobs.publish_industry_map --input data/realtime/industry-map.json
 
       - name: Fetch and publish stock money flow
