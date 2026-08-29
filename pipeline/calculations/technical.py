@@ -34,11 +34,12 @@ def score_technical_factors(factors: pd.DataFrame) -> pd.DataFrame:
     if missing:
         raise ValueError(f"technical factor data missing columns: {', '.join(missing)}")
 
+    # V2 deliberately avoids treating extreme volume and ultra-low volatility as
+    # universally bullish.  Both are strategy-dependent and receive a health score
+    # around a usable target range instead of a monotonic rank.
     dimensions = {
         "score_trend": ("ma20_slope", True),
         "score_momentum": ("ret_20d", True),
-        "score_volume_price": ("volume_ratio_20", True),
-        "score_risk": ("volatility_20", False),
     }
     output = factors.loc[:, ["code", "trade_date"]].copy()
     for score_column, (factor_column, higher_is_better) in dimensions.items():
@@ -46,6 +47,8 @@ def score_technical_factors(factors: pd.DataFrame) -> pd.DataFrame:
         output[score_column] = grouped.transform(
             lambda values: _percentile_score(values, higher_is_better)
         )
+    output["score_volume_price"] = _target_score(factors["volume_ratio_20"], target=1.5, tolerance=0.7)
+    output["score_risk"] = _target_score(factors["volatility_20"], target=0.32, tolerance=0.22)
 
     output["score_valuation"] = None
     output["score_quality"] = None
@@ -114,3 +117,9 @@ def _percentile_score(values: pd.Series, higher_is_better: bool) -> pd.Series:
     ranks = (valid.rank(method="average") - 1) / (len(valid) - 1) * 100
     result.loc[valid.index] = ranks if higher_is_better else 100 - ranks
     return result
+
+
+def _target_score(values: pd.Series, *, target: float, tolerance: float) -> pd.Series:
+    """Return 0-100 where the target is best and distant values are penalized."""
+    numeric = pd.to_numeric(values, errors="coerce")
+    return (100 * (1 - (numeric - target).abs() / tolerance).clip(lower=0, upper=1))

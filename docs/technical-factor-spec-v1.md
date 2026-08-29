@@ -43,3 +43,12 @@ share of those four scores that is present. `score_valuation`, `score_quality`, 
 `score_growth` are explicitly `null` until their validated input datasets exist.
 
 Configuration version: `technical-v1`.
+
+## Technical score V2
+
+The displayed total is a **technical relative-strength score**, not a buy prediction.
+Trend and 20-day momentum are cross-sectional percentile scores.  Volume health peaks
+near a 20-day volume ratio of 1.5 rather than rewarding unlimited volume; risk health
+peaks near 32% annualized 20-day volatility rather than rewarding the lowest volatility.
+Money flow, valuation, financial quality, and event data remain explicit rule conditions
+until each source has enough history for a separately validated strategy score.
