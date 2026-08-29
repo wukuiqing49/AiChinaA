@@ -76,6 +76,15 @@ jobs:
         run: |
           python -m pipeline.jobs.publish_screener --input reports/screener-publish.json
 
+      # Classifications change slowly but require many source requests. Refresh weekly on
+      # schedule, and on manually requested runs so a newly deployed database can be seeded.
+      - name: Fetch and publish industry map
+        if: ${{ github.event_name == 'workflow_dispatch' || github.event.schedule == '35 7 * * 1' }}
+        continue-on-error: true
+        run: |
+          python -m pipeline.jobs.fetch_industry_map --output data/realtime/industry-map.json
+          python -m pipeline.jobs.publish_industry_map --input data/realtime/industry-map.json
+
       - name: Fetch and publish stock money flow
         continue-on-error: true
         run: |

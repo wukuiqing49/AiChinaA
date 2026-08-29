@@ -65,6 +65,8 @@ export interface ScreenerItem {
   ma20Slope: number | null;
   volumeRatio20: number | null;
   volatility20: number | null;
+  totalMarketCap?: number | null;
+  floatMarketCap?: number | null;
 }
 
 export interface MarketIndexItem {
@@ -135,7 +137,7 @@ export const api = {
     return request<{ items: ScreenerItem[]; total: number; page: number; pageSize: number; asOf: string | null }>(`/api/screener?${params}`);
   },
   marketIndices: () => request<{ items: MarketIndexItem[] }>("/api/market-indices"),
-  marketHeatmap: () => request<{ items: ScreenerItem[] }>("/api/market-heatmap"),
+  marketHeatmap: () => request<{ items: ScreenerItem[]; classifiedCount?: number; totalCount?: number; asOf?: string | null }>("/api/market-heatmap"),
   top10: () => request<{ items: ScreenerItem[] }>("/api/recommendations/top10"),
   ruleScreener: (rule: RuleScreenerRequest) => request<{ items: ScreenerItem[]; total: number; page: number; pageSize: number }>("/api/rule-screener", {
     method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(rule),

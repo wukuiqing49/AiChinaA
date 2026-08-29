@@ -583,7 +583,7 @@ export default function App() {
 
         {/* VIEW 2: HEATMAP (市场全景热力图) */}
         {navTab === "heatmap" && (
-          <MarketHeatmapView
+          <MarketHeatmapViewV2
             items={marketHeatmapItems}
             onSelectStock={(item) => handleSelectStock(item, false)}
           />
@@ -1018,6 +1018,89 @@ function MarketHeatmapView({
             src="https://s.tradingview.com/embed-widget/stock-heatmap/?locale=zh_CN#%7B%22dataSource%22%3A%22China%22%2C%22blockSize%22%3A%22market_cap_basic%22%2C%22blockColor%22%3A%22change%22%2C%22grouping%22%3A%22sector%22%2C%22theme%22%3A%22light%22%2C%22hasTopBar%22%3Atrue%2C%22isDataSetEnabled%22%3Atrue%7D"
             className="full-tv-iframe"
           />
+        </div>
+      )}
+    </section>
+  );
+}
+
+/** Sector heatmap: uses the independent all-market endpoint, never the search result. */
+function MarketHeatmapViewV2({
+  items,
+  onSelectStock,
+}: {
+  items: ScreenerItem[];
+  onSelectStock: (item: ScreenerItem) => void;
+}) {
+  const [metric, setMetric] = useState<"day" | "ret5" | "ret20">("day");
+  const value = (stock: ScreenerItem) => metric === "day" ? stock.pctChange : metric === "ret5" ? stock.ret5d : stock.ret20d;
+  const label = metric === "day" ? "当日涨跌" : metric === "ret5" ? "5日涨跌" : "20日涨跌";
+  const color = (change: number | null) => {
+    if (change === null) return "#64748b";
+    if (change >= 7) return "#b91c1c";
+    if (change >= 3) return "#dc2626";
+    if (change >= 1) return "#ef4444";
+    if (change > 0) return "#fb7185";
+    if (change === 0) return "#94a3b8";
+    if (change <= -7) return "#15803d";
+    if (change <= -3) return "#16a34a";
+    if (change <= -1) return "#22c55e";
+    return "#4ade80";
+  };
+  const sectors = useMemo(() => {
+    const groups = new Map<string, ScreenerItem[]>();
+    for (const stock of items) {
+      const industry = stock.industry || (stock.instrumentType === "etf" ? "ETF基金" : "待分类");
+      groups.set(industry, [...(groups.get(industry) ?? []), stock]);
+    }
+    return [...groups.entries()].map(([industry, stocks]) => {
+      const sorted = [...stocks].sort((a, b) => (b.floatMarketCap ?? b.totalMarketCap ?? 0) - (a.floatMarketCap ?? a.totalMarketCap ?? 0));
+      const cap = sorted.reduce((sum, stock) => sum + Math.max(stock.floatMarketCap ?? stock.totalMarketCap ?? 0, 0), 0);
+      const usable = sorted.filter((stock) => value(stock) !== null);
+      const weight = usable.reduce((sum, stock) => sum + Math.max(stock.floatMarketCap ?? stock.totalMarketCap ?? 1, 1), 0);
+      const average = weight ? usable.reduce((sum, stock) => sum + (value(stock) ?? 0) * Math.max(stock.floatMarketCap ?? stock.totalMarketCap ?? 1, 1), 0) / weight : null;
+      return { industry, stocks: sorted, cap, average };
+    }).sort((a, b) => b.cap - a.cap || b.stocks.length - a.stocks.length);
+  }, [items, metric]);
+
+  return (
+    <section className="view-container heatmap-view">
+      <div className="section-heading">
+        <div>
+          <h2>A股板块热力图</h2>
+          <span>行业归类 · 红涨绿跌 · 面积优先按流通市值</span>
+        </div>
+        <div className="heatmap-controls">
+          <div className="toggle-group">
+            {(["day", "ret5", "ret20"] as const).map((key) => (
+              <button key={key} className={metric === key ? "toggle-btn active" : "toggle-btn"} onClick={() => setMetric(key)}>
+                {key === "day" ? "当日涨跌" : key === "ret5" ? "5日涨跌" : "20日涨跌"}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+      <div className="heatmap-legend"><span className="legend-down">下跌</span><i className="legend-flat" /><span>平盘</span><i className="legend-up" /><span>上涨</span><em>板块涨跌按市值加权；点击个股可查看详情</em></div>
+      {!items.length ? <div className="empty">暂无可用的全市场热力数据。</div> : (
+        <div className="sector-treemap">
+          {sectors.map((sector) => (
+            <section key={sector.industry} className="sector-treemap-block" style={{ gridColumn: `span ${sector.cap >= 5e11 ? 2 : 1}` }}>
+              <header className="sector-treemap-header" style={{ borderColor: color(sector.average) }}>
+                <strong>{sector.industry} <small>{sector.stocks.length}只</small></strong>
+                <span className={(sector.average ?? 0) >= 0 ? "positive" : "negative"}>{formatPercent(sector.average)}</span>
+              </header>
+              <div className="sector-stock-tiles">
+                {sector.stocks.slice(0, 42).map((stock) => {
+                  const marketCap = stock.floatMarketCap ?? stock.totalMarketCap ?? 1e8;
+                  const grow = Math.max(1, Math.min(5, Math.log10(marketCap / 1e8 + 1)));
+                  return <button key={stock.code} className="sector-stock-tile" style={{ backgroundColor: color(value(stock)), flexGrow: grow }} onClick={() => onSelectStock(stock)} title={`${stock.name} ${stock.code}\n${label}: ${formatPercent(value(stock))}`}>
+                    <span>{stock.name}</span><b>{formatPercent(value(stock))}</b>
+                  </button>;
+                })}
+                {sector.stocks.length > 42 && <span className="sector-more-tile">+{sector.stocks.length - 42}只</span>}
+              </div>
+            </section>
+          ))}
         </div>
       )}
     </section>

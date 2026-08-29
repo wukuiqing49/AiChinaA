@@ -212,6 +212,10 @@ const valuationPublishSchema = z.object({
   dataDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), source: z.string().min(1).max(80),
   rows: z.array(z.object({ code: z.string().regex(/^\d{6}$/), peTtm: z.number().nullable(), pb: z.number().nullable(), totalMarketCap: z.number().min(0).nullable(), floatMarketCap: z.number().min(0).nullable() })).min(1).max(6000),
 });
+const industryPublishSchema = z.object({
+  source: z.string().min(1).max(80),
+  rows: z.array(z.object({ code: z.string().regex(/^\d{6}$/), industry: z.string().trim().min(1).max(80) })).min(1).max(6000),
+});
 const financialPublishSchema = z.object({ dataDate: z.string(), reportDate: z.string(), source: z.string().min(1), rows: z.array(z.object({ code: z.string().regex(/^\d{6}$/), announcementDate: z.string().nullable().optional(), roe: z.number().nullable(), revenueYoy: z.number().nullable(), profitYoy: z.number().nullable(), grossMargin: z.number().nullable(), debtRatio: z.number().nullable(), revenue: z.number().nullable(), netProfit: z.number().nullable() })).min(1).max(6000) });
 const ruleConditionSchema = z.object({
   field: z.enum(["ret5d", "ret20d", "ret60d", "ret120d", "ret250d", "ma20Slope", "volumeRatio5", "volumeRatio20", "amount", "amountRatio5", "amountRatio20", "rsi14", "volatility20", "volatility60", "maxDrawdown60", "distanceHigh20", "distanceHigh60", "distanceHigh250", "distanceLow250", "pricePercentile250", "turnoverRate", "close", "score", "mainNetInflow", "mainNetInflowPct", "superLargeNetInflow", "largeNetInflow", "mediumNetInflow", "smallNetInflow", "mainNetInflow3d", "mainNetInflow5d", "mainNetInflow10d", "peTtm", "pb", "totalMarketCap", "floatMarketCap", "roe", "revenueYoy", "profitYoy", "grossMargin", "debtRatio", "revenue", "netProfit", "industry", "market"]),
@@ -231,16 +235,24 @@ const ruleScreenerSchema = z.object({
 app.get("/api/market-heatmap", async (context) => {
   const rows = await context.env.DB.prepare(
     `SELECT s.code, s.name, s.instrument_type, s.is_st, s.trade_date, s.quote_date, s.quote_time, s.quote_source,
-            s.close, s.score_total, s.data_completeness,
-            d.market, d.industry, d.pct_change, d.turnover_rate, d.ret_5d, d.ret_20d,
+            s.close, s.score_total, s.data_completeness, v.total_market_cap, v.float_market_cap,
+            d.market, COALESCE(i.industry, d.industry) AS industry, d.pct_change, d.turnover_rate, d.ret_5d, d.ret_20d,
             d.ret_60d, d.ma20_slope, d.volume_ratio_20, d.volatility_20
        FROM stock_latest s
        LEFT JOIN stock_screen_latest d ON d.code = s.code
+       LEFT JOIN stock_industry_latest i ON i.code = s.code
+       LEFT JOIN stock_valuation_latest v ON v.code = s.code
       WHERE s.is_st = 0 AND s.updated_at = (${latestFullRunSql})
-      ORDER BY COALESCE(d.industry, ''), s.score_total DESC, s.code ASC
+      ORDER BY COALESCE(i.industry, d.industry, ''), COALESCE(v.float_market_cap, v.total_market_cap, 0) DESC, s.code ASC
       LIMIT 6000`,
   ).all<ScreenerRow>();
-  return context.json({ items: rows.results.map(toScreenerItem) });
+  const items = rows.results.map(toScreenerItem);
+  return context.json({
+    items,
+    classifiedCount: items.filter((item) => Boolean(item.industry)).length,
+    totalCount: items.length,
+    asOf: items[0]?.quoteDate ?? items[0]?.tradeDate ?? null,
+  });
 });
 
 app.get("/api/recommendations/top10", async (context) => {
@@ -479,6 +491,26 @@ app.post("/api/internal/publish-fund-flow", async (context) => {
     return context.json({ status: "completed", rowCount: rows.length, dataDate, source });
   } catch (error) {
     return context.json({ error: error instanceof Error ? error.message.slice(0, 500) : "资金流保存失败。" }, 500);
+  }
+});
+
+app.post("/api/internal/publish-industry-map", async (context) => {
+  if (!context.env.PUBLISH_SECRET || !secretsEqual(context.req.header("X-Publish-Secret") ?? "", context.env.PUBLISH_SECRET)) {
+    return context.json({ error: "Invalid publish credentials." }, 401);
+  }
+  const body = industryPublishSchema.safeParse(await context.req.json());
+  if (!body.success) return context.json({ error: "Invalid industry mapping payload.", details: body.error.flatten() }, 400);
+  const now = new Date().toISOString();
+  const statements = body.data.rows.map((row) => context.env.DB.prepare(
+    `INSERT INTO stock_industry_latest (code, industry, source, updated_at)
+     SELECT ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM stock_latest WHERE code = ?)
+     ON CONFLICT(code) DO UPDATE SET industry = excluded.industry, source = excluded.source, updated_at = excluded.updated_at`,
+  ).bind(row.code, row.industry, body.data.source, now, row.code));
+  try {
+    for (let index = 0; index < statements.length; index += 100) await context.env.DB.batch(statements.slice(index, index + 100));
+    return context.json({ status: "completed", rowCount: body.data.rows.length, source: body.data.source });
+  } catch (error) {
+    return context.json({ error: error instanceof Error ? error.message.slice(0, 500) : "Could not save industry mapping." }, 500);
   }
 });
 
@@ -722,6 +754,8 @@ interface ScreenerRow {
   close: number | null;
   score_total: number | null;
   data_completeness: number | null;
+  total_market_cap: number | null;
+  float_market_cap: number | null;
   market: string | null;
   industry: string | null;
   pct_change: number | null;
@@ -798,6 +832,8 @@ function toScreenerItem(row: ScreenerRow) {
     close: row.close,
     score: row.score_total,
     dataCompleteness: row.data_completeness,
+    totalMarketCap: row.total_market_cap,
+    floatMarketCap: row.float_market_cap,
     market: row.market,
     industry: row.industry,
     pctChange: row.pct_change,
