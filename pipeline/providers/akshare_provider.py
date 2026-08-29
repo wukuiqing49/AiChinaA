@@ -137,6 +137,7 @@ class AkShareProvider:
                         start_date=start_date,
                         end_date=end_date,
                         adjust=adjust,
+                        timeout=25,
                     ),
                 )
             )
@@ -187,6 +188,7 @@ class AkShareProvider:
                         start_date=start_date,
                         end_date=end_date,
                         adjust=adjust,
+                        timeout=25,
                     ),
                 )
             )
