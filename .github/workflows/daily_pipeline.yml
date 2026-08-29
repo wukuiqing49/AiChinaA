@@ -10,6 +10,14 @@ on:
         description: Worker refresh request ID
         required: false
         type: string
+      refresh_mode:
+        description: quick publishes current quotes; history also appends daily K-lines
+        required: false
+        default: quick
+        type: choice
+        options:
+          - quick
+          - history
 
 jobs:
   run-pipeline:
@@ -27,6 +35,7 @@ jobs:
       PUBLISH_SECRET: ${{ secrets.PUBLISH_SECRET }}
       REFRESH_CALLBACK_URL: https://a-share-quant-app.developermantou.workers.dev/api/internal/data-refresh-callback
       REFRESH_CALLBACK_SECRET: ${{ secrets.REFRESH_CALLBACK_SECRET }}
+      REFRESH_MODE: ${{ inputs.refresh_mode || 'quick' }}
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -44,25 +53,24 @@ jobs:
 
       - name: Restore historical snapshot from R2
         run: |
-          if aws s3 ls "s3://${R2_BUCKET}/historical-current.zip" --endpoint-url "$R2_ENDPOINT" >/dev/null 2>&1; then
-            aws s3 cp "s3://${R2_BUCKET}/historical-current.zip" data/snapshots/historical-current.zip --endpoint-url "$R2_ENDPOINT"
-            python -m pipeline.jobs.snapshot_history --verify data/snapshots/historical-current.zip
-            unzip -q data/snapshots/historical-current.zip -d data
-          fi
+          set -euo pipefail
+          test -n "$R2_ENDPOINT" && test -n "$R2_BUCKET"
+          test -n "$AWS_ACCESS_KEY_ID" && test -n "$AWS_SECRET_ACCESS_KEY"
+          aws s3 cp "s3://${R2_BUCKET}/historical-current.zip" data/snapshots/historical-current.zip --endpoint-url "$R2_ENDPOINT"
+          python -m pipeline.jobs.snapshot_history --verify data/snapshots/historical-current.zip
+          unzip -q data/snapshots/historical-current.zip -d data
+          test -f data/historical/checkpoints.json
 
       - name: Mark manual refresh running
         if: ${{ inputs.refresh_id != '' }}
         run: |
           curl --fail-with-body -X POST "$REFRESH_CALLBACK_URL" -H "Content-Type: application/json" -H "X-Refresh-Secret: $REFRESH_CALLBACK_SECRET" -d '{"id":"${{ inputs.refresh_id }}","status":"running"}'
 
-      - name: Incremental download and name repair
+      - name: Append daily K-lines (explicit history mode only)
+        if: ${{ env.REFRESH_MODE == 'history' }}
         run: |
-          if [ ! -f data/historical/checkpoints.json ]; then
-            python -m pipeline.jobs.download_history --workers 2
-          else
-            python -m pipeline.jobs.download_history --repair-names
-            python -m pipeline.jobs.download_history --incremental --workers 2
-          fi
+          python -m pipeline.jobs.download_history --repair-names
+          python -m pipeline.jobs.download_history --incremental --workers 4
 
       - name: Fetch real-time market snapshot
         run: |
