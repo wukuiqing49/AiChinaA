@@ -1,0 +1,29 @@
+name: Refresh A-Share Industry Map
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Refresh classifications once per week after the daily market pipeline.
+    - cron: '10 8 * * 1'
+
+jobs:
+  refresh-industry-map:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: a-share-industry-map
+      cancel-in-progress: false
+    env:
+      PUBLISH_URL: ${{ secrets.PUBLISH_URL }}
+      PUBLISH_SECRET: ${{ secrets.PUBLISH_SECRET }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install dependencies
+        run: pip install -e .
+      - name: Fetch and publish industry map
+        run: |
+          python -m pipeline.jobs.fetch_industry_map --output data/realtime/industry-map.json
+          python -m pipeline.jobs.publish_industry_map --input data/realtime/industry-map.json
