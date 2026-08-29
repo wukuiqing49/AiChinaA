@@ -1,0 +1,59 @@
+name: Initialize A-Share Historical Snapshot
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_bootstrap:
+        description: Type INITIALIZE_HISTORY to start the one-time historical build
+        required: true
+        type: string
+
+jobs:
+  bootstrap-history:
+    if: ${{ inputs.confirm_bootstrap == 'INITIALIZE_HISTORY' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    concurrency:
+      group: a-share-history-bootstrap
+      cancel-in-progress: false
+    env:
+      R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install dependencies
+        run: pip install -e .
+      - name: Validate R2 configuration
+        run: |
+          set -euo pipefail
+          if [ -z "$R2_ENDPOINT" ] || [ -z "$R2_BUCKET" ] || [ -z "$AWS_ACCESS_KEY_ID" ] || [ -z "$AWS_SECRET_ACCESS_KEY" ]; then
+            echo "::error::R2 secrets are missing."
+            exit 1
+          fi
+      - name: Restore partial checkpoint when available
+        run: |
+          if aws s3 ls "s3://${R2_BUCKET}/historical-bootstrap.zip" --endpoint-url "$R2_ENDPOINT" >/dev/null 2>&1; then
+            aws s3 cp "s3://${R2_BUCKET}/historical-bootstrap.zip" data/snapshots/historical-bootstrap.zip --endpoint-url "$R2_ENDPOINT"
+            python -m pipeline.jobs.snapshot_history --verify data/snapshots/historical-bootstrap.zip
+            unzip -q data/snapshots/historical-bootstrap.zip -d data
+          fi
+      - name: Download or resume historical data
+        id: download
+        run: python -m pipeline.jobs.download_history --incremental --workers 6
+      - name: Save resumable checkpoint to R2
+        if: ${{ always() }}
+        run: |
+          python -m pipeline.jobs.snapshot_history --output data/snapshots/historical-bootstrap.zip
+          python -m pipeline.jobs.snapshot_history --verify data/snapshots/historical-bootstrap.zip
+          aws s3 cp data/snapshots/historical-bootstrap.zip "s3://${R2_BUCKET}/historical-bootstrap.zip" --endpoint-url "$R2_ENDPOINT"
+      - name: Promote completed snapshot
+        if: ${{ steps.download.outcome == 'success' }}
+        run: |
+          aws s3 cp data/snapshots/historical-bootstrap.zip "s3://${R2_BUCKET}/historical-current.zip" --endpoint-url "$R2_ENDPOINT"

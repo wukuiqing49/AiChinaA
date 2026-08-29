@@ -112,6 +112,22 @@ class AkShareProvider:
     ) -> pd.DataFrame:
         tx_symbol = self._to_tx_symbol(code)
         attempts: list[tuple[str, Callable[[], pd.DataFrame]]] = []
+
+        def eastmoney() -> pd.DataFrame:
+            return self._call("stock_zh_a_hist")(
+                symbol=code,
+                period="daily",
+                start_date=start_date,
+                end_date=end_date,
+                adjust=adjust,
+            )
+
+        # Tencent retrieves one calendar year at a time.  For a normal one-day
+        # increment it is a good primary source; for first-time multi-year
+        # bootstrap it can turn one stock into dozens of HTTP requests.
+        prefer_eastmoney = int(end_date[:4]) - int(start_date[:4]) >= 2
+        if prefer_eastmoney:
+            attempts.append(("akshare/eastmoney", eastmoney))
         if tx_symbol is not None:
             attempts.append(
                 (
@@ -124,17 +140,8 @@ class AkShareProvider:
                     ),
                 )
             )
-
-        def eastmoney() -> pd.DataFrame:
-            return self._call("stock_zh_a_hist")(
-                symbol=code,
-                period="daily",
-                start_date=start_date,
-                end_date=end_date,
-                adjust=adjust,
-            )
-
-        attempts.append(("akshare/eastmoney", eastmoney))
+        if not prefer_eastmoney:
+            attempts.append(("akshare/eastmoney", eastmoney))
 
         sina_symbol = self._to_sina_symbol(code)
         if sina_symbol is not None:
