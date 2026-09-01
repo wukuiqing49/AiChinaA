@@ -186,18 +186,8 @@ td strong, td small { display: block; }
 .sector-fund-name { font-size: 18px; font-weight: 700; }
 .sector-fund-value { font-size: 16px; font-weight: 700; }
 .sector-fund-meta { font-size: 12px; opacity: .92; }
-.sector-fund-heatmap { min-height: 0; }
-.heatmap-asof { display: flex; gap: 12px; color: var(--text-sub); font-size: 12px; white-space: nowrap; }
-.legend-down-swatch { background: #16a34a; }
-.heatmap-data-warning { margin: 0; color: #a16207; font-size: 13px; }
-.sector-fund-treemap { width: 100%; min-height: 340px; aspect-ratio: 25 / 14; display: block; border: 1px solid var(--border-color); background: var(--bg-card); }
-.sector-fund-tile { cursor: pointer; outline: none; }
-.sector-fund-tile rect { stroke: rgba(255, 255, 255, .78); stroke-width: 1; transition: opacity .15s, stroke-width .15s; }
-.sector-fund-tile:hover rect, .sector-fund-tile:focus rect { opacity: .88; stroke: #0f172a; stroke-width: 3; }
-.sector-fund-tile text { fill: #fff; pointer-events: none; text-shadow: 0 1px 2px rgba(0, 0, 0, .45); }
-.sector-fund-name { font-size: 18px; font-weight: 700; }
-.sector-fund-value { font-size: 16px; font-weight: 700; }
-.sector-fund-meta { font-size: 12px; opacity: .92; }
+.app-shell.heatmap-shell { width: min(100% - 32px, 1680px); }
+.heatmap-shell .sector-fund-treemap { min-height: 620px; }
 
 /* ------------------- RECOMMENDATIONS ------------------- */
 .recommendations-view { display: flex; flex-direction: column; gap: 18px; }
@@ -359,6 +349,7 @@ td strong, td small { display: block; }
 }
 @media (max-width: 640px) {
   .app-shell { width: min(100% - 16px, 1340px); padding-top: 16px; }
+  .app-shell.heatmap-shell { width: min(100% - 16px, 1680px); }
   .heatmap-asof { width: 100%; justify-content: space-between; }
   .sector-fund-treemap { min-height: 260px; }
   .market-breadth-banner { grid-template-columns: 1fr; }
@@ -370,8 +361,6 @@ td strong, td small { display: block; }
   .sectors-heatmap-grid { grid-template-columns: 1fr; }
   .sector-treemap { grid-template-columns: 1fr; }
   .sector-treemap-block { grid-column: span 1 !important; }
-  .heatmap-asof { width: 100%; justify-content: space-between; }
-  .sector-fund-treemap { min-height: 260px; }
   .recommendations-grid { grid-template-columns: 1fr; }
   .universe-tabs-bar { flex-direction: column; align-items: flex-start; gap: 10px; }
 }

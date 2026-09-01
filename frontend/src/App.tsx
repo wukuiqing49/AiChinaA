@@ -5,6 +5,7 @@ import { api, DataRefresh, MarketIndexItem, Recommendation, RuleCondition, RuleD
 import "./styles.css";
 
 type FilterState = Omit<ScreenerQuery, "page" | "pageSize">;
+type NavTab = "screener" | "heatmap" | "recommendations" | "rules" | "watchlist";
 
 const emptyFilters: FilterState = {
   code: "",
@@ -184,7 +185,9 @@ export default function App() {
     return (localStorage.getItem("theme") as "light" | "dark") || "light";
   });
   const [user, setUser] = useState<User | null>(null);
-  const [navTab, setNavTab] = useState<"screener" | "heatmap" | "recommendations" | "rules" | "watchlist">("screener");
+  const [navTab, setNavTab] = useState<NavTab>(() => (
+    window.location.pathname === "/heatmap" ? "heatmap" : "screener"
+  ));
   const [categoryTab, setCategoryTab] = useState<"all" | "stocks" | "etfs">("all");
   
   const [watchlist, setWatchlist] = useState<WatchlistItem[]>([]);
@@ -211,6 +214,20 @@ export default function App() {
   const [selectedStock, setSelectedStock] = useState<ScreenerItem | null>(null);
   const [isFullScreenDetail, setIsFullScreenDetail] = useState(false);
   const [searchKeyword, setSearchKeyword] = useState("");
+
+  const navigateToTab = useCallback((tab: NavTab) => {
+    const path = tab === "heatmap" ? "/heatmap" : "/";
+    if (window.location.pathname !== path) window.history.pushState(null, "", path);
+    setNavTab(tab);
+  }, []);
+
+  useEffect(() => {
+    const syncTabWithLocation = () => {
+      setNavTab(window.location.pathname === "/heatmap" ? "heatmap" : "screener");
+    };
+    window.addEventListener("popstate", syncTabWithLocation);
+    return () => window.removeEventListener("popstate", syncTabWithLocation);
+  }, []);
 
   const toggleTheme = useCallback(() => {
     setTheme((prev) => {
@@ -410,7 +427,7 @@ export default function App() {
       name: isCode ? "" : query,
     };
     setFilters(nextFilters);
-    setNavTab("screener");
+    navigateToTab("screener");
     setPage(1);
     void loadScreen(nextFilters, 1);
   }
@@ -419,7 +436,7 @@ export default function App() {
     const nextFilters: FilterState = { ...emptyFilters, industry };
     setFilters(nextFilters);
     setCategoryTab("all");
-    setNavTab("screener");
+    navigateToTab("screener");
     setPage(1);
     void loadScreen(nextFilters, 1);
   }
@@ -463,7 +480,7 @@ export default function App() {
 
   return (
     <div className={`app-root ${theme}`}>
-      <main className="app-shell">
+      <main className={navTab === "heatmap" ? "app-shell heatmap-shell" : "app-shell"}>
         {/* Top Header */}
         <header>
           <div className="header-brand">
@@ -541,31 +558,31 @@ export default function App() {
         <nav className="main-nav-bar">
           <button
             className={navTab === "screener" ? "nav-item active" : "nav-item"}
-            onClick={() => setNavTab("screener")}
+            onClick={() => navigateToTab("screener")}
           >
             🔍 选股大盘
           </button>
           <button
             className={navTab === "heatmap" ? "nav-item active" : "nav-item"}
-            onClick={() => setNavTab("heatmap")}
+            onClick={() => navigateToTab("heatmap")}
           >
             🔥 市场全景热力图
           </button>
           <button
             className={navTab === "recommendations" ? "nav-item active" : "nav-item"}
-            onClick={() => setNavTab("recommendations")}
+            onClick={() => navigateToTab("recommendations")}
           >
             🏆 每日量化精选 ({recommendations.length > 0 ? recommendations.length : "Top 10"})
           </button>
           <button
             className={navTab === "rules" ? "nav-item active" : "nav-item"}
-            onClick={() => setNavTab("rules")}
+            onClick={() => navigateToTab("rules")}
           >
             ⚙️ 规则选股 / AI 策略
           </button>
           <button
             className={navTab === "watchlist" ? "nav-item active" : "nav-item"}
-            onClick={() => setNavTab("watchlist")}
+            onClick={() => navigateToTab("watchlist")}
           >
             ⭐ 我的自选池 ({watchlist.length})
           </button>
