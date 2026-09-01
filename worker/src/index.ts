@@ -215,6 +215,35 @@ app.get("/api/screener", async (context) => {
     asOf: asOf?.trade_date ?? null,
   });
 });
+
+app.get("/api/market-overview", async (context) => {
+  const overview = await context.env.DB.prepare(
+    `SELECT COUNT(*) AS total_count,
+            SUM(CASE WHEN d.ret_20d > 0 THEN 1 ELSE 0 END) AS up_count,
+            SUM(CASE WHEN d.ret_20d < 0 THEN 1 ELSE 0 END) AS down_count,
+            SUM(CASE WHEN d.ret_20d = 0 THEN 1 ELSE 0 END) AS flat_count,
+            SUM(CASE WHEN d.ret_20d IS NOT NULL THEN 1 ELSE 0 END) AS ret20_available_count,
+            AVG(d.ret_20d) AS average_ret20,
+            AVG(s.score_total) AS average_score,
+            SUM(CASE WHEN s.score_total >= 70 THEN 1 ELSE 0 END) AS high_score_count,
+            MAX(COALESCE(s.quote_date, s.trade_date)) AS as_of
+       FROM stock_latest s
+       LEFT JOIN stock_screen_latest d ON d.code = s.code
+      WHERE s.is_st = 0 AND s.updated_at = (${latestFullRunSql})`,
+  ).first<MarketOverviewRow>();
+  return context.json({
+    totalCount: overview?.total_count ?? 0,
+    upCount: overview?.up_count ?? 0,
+    downCount: overview?.down_count ?? 0,
+    flatCount: overview?.flat_count ?? 0,
+    ret20AvailableCount: overview?.ret20_available_count ?? 0,
+    averageRet20: overview?.average_ret20 ?? null,
+    averageScore: overview?.average_score ?? null,
+    highScoreCount: overview?.high_score_count ?? 0,
+    asOf: overview?.as_of ?? null,
+  });
+});
+
 const moneyFlowPublishSchema = z.object({
   dataDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   source: z.string().min(1).max(80),
@@ -1120,6 +1149,18 @@ interface DataStatusRow {
   financial_updated_at: string | null;
   screener_updated_at: string | null;
   screener_trade_date: string | null;
+}
+
+interface MarketOverviewRow {
+  total_count: number;
+  up_count: number | null;
+  down_count: number | null;
+  flat_count: number | null;
+  ret20_available_count: number | null;
+  average_ret20: number | null;
+  average_score: number | null;
+  high_score_count: number | null;
+  as_of: string | null;
 }
 
 function toSectorHeatmapItem(row: SectorHeatmapRow) {

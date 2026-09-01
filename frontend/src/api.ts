@@ -26,6 +26,18 @@ export interface DataStatus {
   screenerTradeDate: string | null;
 }
 
+export interface MarketOverview {
+  totalCount: number;
+  upCount: number;
+  downCount: number;
+  flatCount: number;
+  ret20AvailableCount: number;
+  averageRet20: number | null;
+  averageScore: number | null;
+  highScoreCount: number;
+  asOf: string | null;
+}
+
 export interface RuleDataCapabilities {
   industry: boolean;
   moneyFlow: boolean;
@@ -177,6 +189,7 @@ export const api = {
     return request<{ items: ScreenerItem[]; total: number; page: number; pageSize: number; asOf: string | null }>(`/api/screener?${params}`);
   },
   marketIndices: () => request<{ items: MarketIndexItem[] }>("/api/market-indices"),
+  marketOverview: () => request<MarketOverview>("/api/market-overview"),
   marketHeatmap: () => request<{ items: SectorHeatmapItem[]; asOf: string | null; updatedAt: string | null; moneyFlowAvailable: boolean }>("/api/market-heatmap"),
   top10: () => request<{ items: ScreenerItem[] }>("/api/recommendations/top10"),
   ruleDataCapabilities: () => request<RuleDataCapabilities>("/api/rule-data-capabilities"),

@@ -1,7 +1,7 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { hierarchy, treemap } from "d3-hierarchy";
 
-import { api, DataRefresh, DataStatus, MarketIndexItem, Recommendation, RuleCondition, RuleDataCapabilities, RuleScreenerRequest, SavedStrategy, ScreenerItem, ScreenerQuery, SectorHeatmapItem, User, WatchlistItem } from "./api";
+import { api, DataRefresh, DataStatus, MarketIndexItem, MarketOverview, Recommendation, RuleCondition, RuleDataCapabilities, RuleScreenerRequest, SavedStrategy, ScreenerItem, ScreenerQuery, SectorHeatmapItem, User, WatchlistItem } from "./api";
 import "./styles.css";
 
 type FilterState = Omit<ScreenerQuery, "page" | "pageSize">;
@@ -193,6 +193,7 @@ export default function App() {
   const [watchlist, setWatchlist] = useState<WatchlistItem[]>([]);
   const [recommendations, setRecommendations] = useState<Recommendation[]>([]);
   const [marketIndices, setMarketIndices] = useState<MarketIndexItem[]>([]);
+  const [marketOverview, setMarketOverview] = useState<MarketOverview | null>(null);
   const [refresh, setRefresh] = useState<DataRefresh | null>(null);
   const [refreshError, setRefreshError] = useState<string | null>(null);
   const [dataStatus, setDataStatus] = useState<DataStatus | null>(null);
@@ -312,6 +313,14 @@ export default function App() {
     }
   }, []);
 
+  const loadMarketOverview = useCallback(async () => {
+    try {
+      setMarketOverview(await api.marketOverview());
+    } catch {
+      setMarketOverview(null);
+    }
+  }, []);
+
   const loadDataStatus = useCallback(async () => {
     try {
       setDataStatus(await api.dataStatus());
@@ -336,6 +345,7 @@ export default function App() {
     void loadTop10();
     void loadRecommendations();
     void loadMarketIndices();
+    void loadMarketOverview();
     void loadRefresh();
     void loadDataStatus();
 
@@ -351,7 +361,7 @@ export default function App() {
       }
     }
 
-  }, [loadDataStatus, loadMarketHeatmap, loadMarketIndices, loadRecommendations, loadRefresh, loadScreen, loadTop10, loadUser]);
+  }, [loadDataStatus, loadMarketHeatmap, loadMarketIndices, loadMarketOverview, loadRecommendations, loadRefresh, loadScreen, loadTop10, loadUser]);
 
   function handleSelectStock(stock: ScreenerItem, fullScreen = false) {
     setSelectedStock(stock);
@@ -441,18 +451,16 @@ export default function App() {
     }
   }
 
-  // Market Breadth Statistics
-  const marketStats = useMemo(() => {
-    if (!items.length) return null;
-    const up = items.filter((i) => (i.ret20d ?? 0) > 0).length;
-    const down = items.filter((i) => (i.ret20d ?? 0) < 0).length;
-    const flat = items.length - up - down;
-    const avgRet = items.reduce((sum, i) => sum + (i.ret20d ?? 0), 0) / items.length;
-    const avgScore = items.reduce((sum, i) => sum + (i.score ?? 0), 0) / items.length;
-    const highScores = items.filter((i) => (i.score ?? 0) >= 70).length;
-    const upPct = (up / items.length) * 100;
-    return { up, down, flat, avgRet, avgScore, highScores, upPct };
-  }, [items]);
+  const marketStats = marketOverview && marketOverview.ret20AvailableCount > 0
+    ? {
+        up: marketOverview.upCount,
+        down: marketOverview.downCount,
+        avgRet: marketOverview.averageRet20,
+        avgScore: marketOverview.averageScore,
+        highScores: marketOverview.highScoreCount,
+        upPct: (marketOverview.upCount / marketOverview.ret20AvailableCount) * 100,
+      }
+    : null;
 
   const pageCount = Math.max(1, Math.ceil(total / 25));
 
@@ -517,8 +525,8 @@ export default function App() {
               </div>
             </div>
             <div className="breadth-stat">
-              <span className="b-label">当前池平均20日涨幅</span>
-              <span className={`b-val ${marketStats.avgRet >= 0 ? "positive" : "negative"}`}>
+              <span className="b-label">全市场平均20日涨幅</span>
+              <span className={`b-val ${(marketStats.avgRet ?? 0) >= 0 ? "positive" : "negative"}`}>
                 {formatRatioPercent(marketStats.avgRet)}
               </span>
             </div>

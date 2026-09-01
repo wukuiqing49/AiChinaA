@@ -22,7 +22,8 @@ jobs:
       - name: Build screener package
         run: python -m pipeline.jobs.build_screener --max-stocks 300 --workers 4
       - name: Publish screener package
-        run: python -m pipeline.jobs.publish_screener --input reports/screener-publish.json
+        # This 300-stock validation sample must not replace the full-market snapshot.
+        run: python -m pipeline.jobs.publish_screener --input reports/screener-publish.json --run-kind supplemental_st
         env:
           PUBLISH_URL: ${{ secrets.PUBLISH_URL }}
           PUBLISH_SECRET: ${{ secrets.PUBLISH_SECRET }}
