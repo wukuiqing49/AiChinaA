@@ -98,6 +98,19 @@ const screenerPublishSchema = z.object({
     volatility20: z.number().min(0).nullable(),
   })).max(100).default([]),
 });
+const realtimeQuotePublishSchema = z.object({
+  generatedAt: z.string().max(64).optional(),
+  quotes: z.array(z.object({
+    code: z.string().min(6).max(12),
+    instrumentType: z.enum(["stock", "etf", "index"]),
+    name: z.string().trim().min(1).max(80).optional(),
+    close: z.number().finite().positive(),
+    pctChange: z.number().finite(),
+    quoteDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    quoteTime: z.string().regex(/^\d{2}:\d{2}:\d{2}$/),
+    quoteSource: z.enum(["tencent", "sina"]),
+  })).min(1).max(6000),
+});
 
 app.get("/api/health", (context) => context.json({ status: "ok" }));
 
@@ -132,7 +145,7 @@ app.get("/api/screener", async (context) => {
     bindings.push(query.market);
   }
   if (!identitySearch && query.industry) {
-    conditions.push("d.industry LIKE ?");
+    conditions.push("COALESCE(i.industry, d.industry) LIKE ?");
     bindings.push(`%${query.industry}%`);
   }
   if (!identitySearch) addRange(conditions, bindings, "s.close", query.minPrice, query.maxPrice);
@@ -169,12 +182,13 @@ app.get("/api/screener", async (context) => {
   const offset = (query.page - 1) * query.pageSize;
   const baseSql = `FROM stock_latest s
      LEFT JOIN stock_screen_latest d ON d.code = s.code
+     LEFT JOIN stock_industry_latest i ON i.code = s.code
      ${where}`;
   const [rows, count, asOf] = await Promise.all([
     context.env.DB.prepare(
       `SELECT s.code, s.name, s.instrument_type, s.is_st, s.trade_date, s.quote_date, s.quote_time, s.quote_source,
               s.close, s.score_total, s.data_completeness,
-              d.market, d.industry, d.pct_change, d.turnover_rate, d.ret_5d, d.ret_20d,
+              d.market, COALESCE(i.industry, d.industry) AS industry, COALESCE(s.quote_pct_change, d.pct_change) AS pct_change, d.turnover_rate, d.ret_5d, d.ret_20d,
               d.ret_60d, d.ma20_slope, d.volume_ratio_20, d.volatility_20
          ${baseSql}
         ORDER BY ${orderColumn} ${orderDirection}, s.code ASC
@@ -231,27 +245,93 @@ const ruleScreenerSchema = z.object({
   page: z.number().int().min(1).max(10000).default(1),
   pageSize: z.number().int().min(10).max(100).default(50),
 });
+const savedStrategySchema = z.object({
+  name: z.string().trim().min(1).max(60),
+  rule: ruleScreenerSchema,
+});
+
+type RuleDataCapability = "industry" | "moneyFlow" | "valuation" | "financial";
+
+const ruleFieldCapabilities: Record<string, RuleDataCapability> = {
+  industry: "industry",
+  mainNetInflow: "moneyFlow",
+  mainNetInflowPct: "moneyFlow",
+  superLargeNetInflow: "moneyFlow",
+  largeNetInflow: "moneyFlow",
+  mediumNetInflow: "moneyFlow",
+  smallNetInflow: "moneyFlow",
+  mainNetInflow3d: "moneyFlow",
+  mainNetInflow5d: "moneyFlow",
+  mainNetInflow10d: "moneyFlow",
+  peTtm: "valuation",
+  pb: "valuation",
+  totalMarketCap: "valuation",
+  floatMarketCap: "valuation",
+  roe: "financial",
+  revenueYoy: "financial",
+  profitYoy: "financial",
+  grossMargin: "financial",
+  debtRatio: "financial",
+  revenue: "financial",
+  netProfit: "financial",
+};
+
+async function getRuleDataCapabilities(database: D1Database): Promise<Record<RuleDataCapability, boolean>> {
+  const rows = await database.prepare(
+    `SELECT
+       EXISTS(SELECT 1 FROM stock_industry_latest LIMIT 1) AS industry,
+       EXISTS(SELECT 1 FROM stock_money_flow_latest LIMIT 1) AS money_flow,
+       EXISTS(SELECT 1 FROM stock_valuation_latest LIMIT 1) AS valuation,
+       EXISTS(SELECT 1 FROM stock_financial_latest LIMIT 1) AS financial`,
+  ).first<{ industry: number; money_flow: number; valuation: number; financial: number }>();
+  return {
+    industry: Boolean(rows?.industry),
+    moneyFlow: Boolean(rows?.money_flow),
+    valuation: Boolean(rows?.valuation),
+    financial: Boolean(rows?.financial),
+  };
+}
+
+app.get("/api/rule-data-capabilities", async (context) => context.json(await getRuleDataCapabilities(context.env.DB)));
 
 app.get("/api/market-heatmap", async (context) => {
   const rows = await context.env.DB.prepare(
-    `SELECT s.code, s.name, s.instrument_type, s.is_st, s.trade_date, s.quote_date, s.quote_time, s.quote_source,
-            s.close, s.score_total, s.data_completeness, v.total_market_cap, v.float_market_cap,
-            d.market, COALESCE(i.industry, d.industry) AS industry, d.pct_change, d.turnover_rate, d.ret_5d, d.ret_20d,
-            d.ret_60d, d.ma20_slope, d.volume_ratio_20, d.volatility_20
+    `WITH sector_source AS (
+       SELECT COALESCE(i.industry, d.industry) AS industry, d.trade_date, d.amount,
+              d.pct_change, f.main_net_inflow, f.data_date AS money_flow_date
        FROM stock_latest s
        LEFT JOIN stock_screen_latest d ON d.code = s.code
        LEFT JOIN stock_industry_latest i ON i.code = s.code
-       LEFT JOIN stock_valuation_latest v ON v.code = s.code
-      WHERE s.is_st = 0 AND s.updated_at = (${latestFullRunSql})
-      ORDER BY COALESCE(i.industry, d.industry, ''), COALESCE(v.float_market_cap, v.total_market_cap, 0) DESC, s.code ASC
-      LIMIT 6000`,
-  ).all<ScreenerRow>();
-  const items = rows.results.map(toScreenerItem);
+       LEFT JOIN stock_money_flow_latest f ON f.code = s.code
+      WHERE s.is_st = 0 AND s.instrument_type = 'stock' AND s.updated_at = (${latestFullRunSql})
+        AND NULLIF(TRIM(COALESCE(i.industry, d.industry, '')), '') IS NOT NULL
+     )
+     SELECT industry, COUNT(*) AS stock_count, MAX(trade_date) AS trade_date,
+            MAX(money_flow_date) AS money_flow_date, SUM(COALESCE(amount, 0)) AS turnover_amount,
+            SUM(COALESCE(main_net_inflow, 0)) AS main_net_inflow,
+            SUM(CASE WHEN main_net_inflow IS NOT NULL THEN 1 ELSE 0 END) AS money_flow_count,
+            CASE WHEN SUM(CASE WHEN main_net_inflow IS NOT NULL THEN 1 ELSE 0 END) > 0
+                   AND SUM(COALESCE(amount, 0)) > 0
+              THEN SUM(COALESCE(main_net_inflow, 0)) / SUM(COALESCE(amount, 0))
+              ELSE NULL END AS main_net_inflow_ratio,
+            CASE WHEN SUM(CASE WHEN pct_change IS NOT NULL AND COALESCE(amount, 0) > 0 THEN amount ELSE 0 END) > 0
+              THEN SUM(CASE WHEN pct_change IS NOT NULL THEN pct_change * COALESCE(amount, 0) ELSE 0 END)
+                / SUM(CASE WHEN pct_change IS NOT NULL THEN COALESCE(amount, 0) ELSE 0 END)
+              ELSE NULL END AS pct_change
+       FROM sector_source
+      GROUP BY industry
+     HAVING SUM(COALESCE(amount, 0)) > 0
+      ORDER BY turnover_amount DESC, industry ASC`,
+  ).all<SectorHeatmapRow>();
+  const items = rows.results.map(toSectorHeatmapItem);
+  const latestDate = (dates: Array<string | null>) => (
+    dates.filter((date): date is string => date !== null).sort().at(-1) ?? null
+  );
   return context.json({
     items,
-    classifiedCount: items.filter((item) => Boolean(item.industry)).length,
-    totalCount: items.length,
-    asOf: items[0]?.quoteDate ?? items[0]?.tradeDate ?? null,
+    asOf: latestDate(items.map((item) => item.tradeDate)),
+    moneyFlowAsOf: latestDate(items.map((item) => item.moneyFlowDate)),
+    moneyFlowAvailable: items.some((item) => item.moneyFlowCount > 0),
   });
 });
 
@@ -259,10 +339,11 @@ app.get("/api/recommendations/top10", async (context) => {
   const rows = await context.env.DB.prepare(
     `SELECT s.code, s.name, s.instrument_type, s.is_st, s.trade_date, s.quote_date, s.quote_time, s.quote_source,
             s.close, s.score_total, s.data_completeness,
-            d.market, d.industry, d.pct_change, d.turnover_rate, d.ret_5d, d.ret_20d,
+            d.market, COALESCE(i.industry, d.industry) AS industry, COALESCE(s.quote_pct_change, d.pct_change) AS pct_change, d.turnover_rate, d.ret_5d, d.ret_20d,
             d.ret_60d, d.ma20_slope, d.volume_ratio_20, d.volatility_20
        FROM stock_latest s
        LEFT JOIN stock_screen_latest d ON d.code = s.code
+       LEFT JOIN stock_industry_latest i ON i.code = s.code
       WHERE s.is_st = 0 AND s.updated_at = (${latestFullRunSql})
       ORDER BY s.score_total DESC, s.code ASC
       LIMIT 10`,
@@ -276,6 +357,15 @@ app.post("/api/rule-screener", async (context) => {
     return context.json({ error: "选股规则格式无效。", details: parsed.error.flatten() }, 400);
   }
   const query = parsed.data;
+  const requestedCapability = query.conditions
+    .map((condition) => ruleFieldCapabilities[condition.field])
+    .find((capability): capability is RuleDataCapability => capability !== undefined);
+  if (requestedCapability) {
+    const capabilities = await getRuleDataCapabilities(context.env.DB);
+    if (!capabilities[requestedCapability]) {
+      return context.json({ error: "所选字段的数据尚未就绪。" }, 409);
+    }
+  }
   const fields = {
     ret5d: { sql: "d.ret_5d", numeric: true }, ret20d: { sql: "d.ret_20d", numeric: true },
     ret60d: { sql: "d.ret_60d", numeric: true }, ret120d: { sql: "d.ret_120d", numeric: true }, ret250d: { sql: "d.ret_250d", numeric: true }, ma20Slope: { sql: "d.ma20_slope", numeric: true },
@@ -284,7 +374,7 @@ app.post("/api/rule-screener", async (context) => {
     peTtm: { sql: "v.pe_ttm", numeric: true }, pb: { sql: "v.pb", numeric: true }, totalMarketCap: { sql: "v.total_market_cap", numeric: true }, floatMarketCap: { sql: "v.float_market_cap", numeric: true },
     roe: { sql: "n.roe", numeric: true }, revenueYoy: { sql: "n.revenue_yoy", numeric: true }, profitYoy: { sql: "n.profit_yoy", numeric: true }, grossMargin: { sql: "n.gross_margin", numeric: true }, debtRatio: { sql: "n.debt_ratio", numeric: true }, revenue: { sql: "n.revenue", numeric: true }, netProfit: { sql: "n.net_profit", numeric: true },
     turnoverRate: { sql: "d.turnover_rate", numeric: true }, close: { sql: "s.close", numeric: true },
-    score: { sql: "s.score_total", numeric: true }, industry: { sql: "d.industry", numeric: false },
+    score: { sql: "s.score_total", numeric: true }, industry: { sql: "COALESCE(i.industry, d.industry)", numeric: false },
     market: { sql: "d.market", numeric: false },
   } as const;
   const conditions = [`s.updated_at = (${latestFullRunSql})`];
@@ -309,11 +399,11 @@ app.post("/api/rule-screener", async (context) => {
   const where = `WHERE ${query.logic === "AND" ? conditions.join(" AND ") : `(${conditions.slice(0, query.excludeSt ? 2 : 1).join(" AND ")}) AND (${conditions.slice(query.excludeSt ? 2 : 1).join(" OR ")})`}`;
   const orderColumn = { score: "s.score_total", price: "s.close", ret20: "d.ret_20d", turnover: "d.turnover_rate", volatility: "d.volatility_20" }[query.sortBy];
   const offset = (query.page - 1) * query.pageSize;
-  const baseSql = `FROM stock_latest s LEFT JOIN stock_screen_latest d ON d.code = s.code LEFT JOIN stock_money_flow_latest f ON f.code = s.code LEFT JOIN stock_valuation_latest v ON v.code = s.code LEFT JOIN stock_financial_latest n ON n.code = s.code ${where}`;
+  const baseSql = `FROM stock_latest s LEFT JOIN stock_screen_latest d ON d.code = s.code LEFT JOIN stock_industry_latest i ON i.code = s.code LEFT JOIN stock_money_flow_latest f ON f.code = s.code LEFT JOIN stock_valuation_latest v ON v.code = s.code LEFT JOIN stock_financial_latest n ON n.code = s.code ${where}`;
   const [rows, count] = await Promise.all([
     context.env.DB.prepare(
       `SELECT s.code, s.name, s.instrument_type, s.is_st, s.trade_date, s.quote_date, s.quote_time, s.quote_source,
-              s.close, s.score_total, s.data_completeness, d.market, d.industry, d.pct_change, d.turnover_rate,
+              s.close, s.score_total, s.data_completeness, d.market, COALESCE(i.industry, d.industry) AS industry, COALESCE(s.quote_pct_change, d.pct_change) AS pct_change, d.turnover_rate,
               d.ret_5d, d.ret_20d, d.ret_60d, d.ma20_slope, d.volume_ratio_20, d.volatility_20 ${baseSql}
        ORDER BY ${orderColumn} ${query.sortDirection === "asc" ? "ASC" : "DESC"}, s.code ASC LIMIT ? OFFSET ?`,
     ).bind(...bindings, query.pageSize, offset).all<ScreenerRow>(),
@@ -358,7 +448,7 @@ app.post("/api/data-refresh", async (context) => {
   ).bind(id, user.username, requestedAt).run();
   const response = await fetch(
     `https://api.github.com/repos/${context.env.GITHUB_OWNER}/${context.env.GITHUB_REPOSITORY}/actions/workflows/${context.env.GITHUB_WORKFLOW}/dispatches`,
-    { method: "POST", headers: { Accept: "application/vnd.github+json", Authorization: `Bearer ${context.env.GITHUB_ACTIONS_TOKEN}`, "User-Agent": "a-share-quant-app" }, body: JSON.stringify({ ref: "main", inputs: { refresh_id: id, refresh_mode: "quick" } }) },
+    { method: "POST", headers: { Accept: "application/vnd.github+json", Authorization: `Bearer ${context.env.GITHUB_ACTIONS_TOKEN}`, "User-Agent": "a-share-quant-app" }, body: JSON.stringify({ ref: "main", inputs: { refresh_id: id } }) },
   );
   if (!response.ok) {
     await context.env.DB.prepare("UPDATE data_refresh_runs SET status = 'failed', completed_at = ?, error_message = ? WHERE id = ?")
@@ -380,6 +470,24 @@ app.post("/api/internal/data-refresh-callback", async (context) => {
      trade_date = COALESCE(?, trade_date), row_count = COALESCE(?, row_count), error_message = ? WHERE id = ?`,
   ).bind(status, status, now, status, now, tradeDate ?? null, rowCount ?? null, error ?? null, id).run();
   return context.json({ id, status });
+});
+
+app.get("/api/internal/market-universe", async (context) => {
+  if (!context.env.PUBLISH_SECRET || !secretsEqual(context.req.header("X-Publish-Secret") ?? "", context.env.PUBLISH_SECRET)) {
+    return context.json({ error: "Invalid publish credentials." }, 401);
+  }
+  const [instruments, indices] = await Promise.all([
+    context.env.DB.prepare(
+      "SELECT code, instrument_type FROM stock_latest WHERE instrument_type IN ('stock', 'etf') ORDER BY code ASC",
+    ).all<{ code: string; instrument_type: "stock" | "etf" }>(),
+    context.env.DB.prepare("SELECT code FROM market_index_latest ORDER BY code ASC").all<{ code: string }>(),
+  ]);
+  return context.json({
+    targets: [
+      ...instruments.results.map((row) => ({ code: row.code, instrumentType: row.instrument_type })),
+      ...indices.results.map((row) => ({ code: row.code, instrumentType: "index" })),
+    ],
+  });
 });
 
 app.post("/api/internal/publish-screener", async (context) => {
@@ -407,13 +515,14 @@ app.post("/api/internal/publish-screener", async (context) => {
       context.env.DB.prepare(
         `INSERT INTO stock_latest (
            code, name, instrument_type, is_st, trade_date, quote_date, quote_time, quote_source, close,
-           score_total, data_completeness, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           score_total, data_completeness, quote_pct_change, quote_updated_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(code) DO UPDATE SET name = excluded.name, instrument_type = excluded.instrument_type, trade_date = excluded.trade_date,
            is_st = excluded.is_st, quote_date = excluded.quote_date, quote_time = excluded.quote_time, quote_source = excluded.quote_source,
            close = excluded.close, score_total = excluded.score_total,
-           data_completeness = excluded.data_completeness, updated_at = excluded.updated_at`,
-      ).bind(stock.code, stock.name, stock.instrumentType, stock.isSt ? 1 : 0, stock.tradeDate, stock.quoteDate, stock.quoteTime, stock.quoteSource, stock.close, stock.scoreTotal, stock.dataCompleteness, startedAt),
+           data_completeness = excluded.data_completeness, quote_pct_change = excluded.quote_pct_change,
+           quote_updated_at = excluded.quote_updated_at, updated_at = excluded.updated_at`,
+      ).bind(stock.code, stock.name, stock.instrumentType, stock.isSt ? 1 : 0, stock.tradeDate, stock.quoteDate, stock.quoteTime, stock.quoteSource, stock.close, stock.scoreTotal, stock.dataCompleteness, stock.pctChange, startedAt, startedAt),
       context.env.DB.prepare(
         `INSERT INTO stock_screen_latest (
            code, trade_date, market, industry, pct_change, turnover_rate, ret_5d, ret_20d,
@@ -438,13 +547,13 @@ app.post("/api/internal/publish-screener", async (context) => {
       ...indices.map((index) => context.env.DB.prepare(
         `INSERT INTO market_index_latest (
            code, name, trade_date, quote_date, quote_time, quote_source, close, pct_change,
-           ret_20d, ma20_slope, volatility_20, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ret_20d, ma20_slope, volatility_20, quote_updated_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(code) DO UPDATE SET name = excluded.name, trade_date = excluded.trade_date,
            quote_date = excluded.quote_date, quote_time = excluded.quote_time, quote_source = excluded.quote_source,
            close = excluded.close, pct_change = excluded.pct_change, ret_20d = excluded.ret_20d,
-           ma20_slope = excluded.ma20_slope, volatility_20 = excluded.volatility_20, updated_at = excluded.updated_at`,
-      ).bind(index.code, index.name, index.tradeDate, index.quoteDate, index.quoteTime, index.quoteSource, index.close, index.pctChange, index.ret20d, index.ma20Slope, index.volatility20, startedAt)),
+           ma20_slope = excluded.ma20_slope, volatility_20 = excluded.volatility_20, quote_updated_at = excluded.quote_updated_at, updated_at = excluded.updated_at`,
+      ).bind(index.code, index.name, index.tradeDate, index.quoteDate, index.quoteTime, index.quoteSource, index.close, index.pctChange, index.ret20d, index.ma20Slope, index.volatility20, startedAt, startedAt)),
     ];
     for (let index = 0; index < statements.length; index += 100) {
       await context.env.DB.batch(statements.slice(index, index + 100));
@@ -579,6 +688,85 @@ app.get("/api/me", async (context) => {
     return user;
   }
   return context.json({ user: publicUser(user, context.env) });
+});
+
+app.post("/api/internal/publish-realtime-quotes", async (context) => {
+  if (!context.env.PUBLISH_SECRET || !secretsEqual(context.req.header("X-Publish-Secret") ?? "", context.env.PUBLISH_SECRET)) {
+    return context.json({ error: "Invalid publish credentials." }, 401);
+  }
+  const body = realtimeQuotePublishSchema.safeParse(await context.req.json());
+  if (!body.success) return context.json({ error: "Invalid real-time quote payload.", details: body.error.flatten() }, 400);
+
+  const now = new Date().toISOString();
+  const statements = body.data.quotes.flatMap((quote) => {
+    if (quote.instrumentType === "index") {
+      return context.env.DB.prepare(
+        `UPDATE market_index_latest
+            SET name = COALESCE(NULLIF(?, ''), name), close = ?, pct_change = ?, quote_date = ?,
+                quote_time = ?, quote_source = ?, quote_updated_at = ?
+          WHERE code = ?`,
+      ).bind(quote.name ?? "", quote.close, quote.pctChange, quote.quoteDate, quote.quoteTime, quote.quoteSource, now, quote.code);
+    }
+    return [
+      context.env.DB.prepare(
+        `UPDATE stock_latest
+            SET name = COALESCE(NULLIF(?, ''), name), close = ?, quote_pct_change = ?, quote_date = ?,
+                quote_time = ?, quote_source = ?, quote_updated_at = ?
+          WHERE code = ? AND instrument_type = ?`,
+      ).bind(quote.name ?? "", quote.close, quote.pctChange, quote.quoteDate, quote.quoteTime, quote.quoteSource, now, quote.code, quote.instrumentType),
+    ];
+  });
+  try {
+    for (let index = 0; index < statements.length; index += 100) {
+      await context.env.DB.batch(statements.slice(index, index + 100));
+    }
+    return context.json({ status: "completed", rowCount: body.data.quotes.length, updatedAt: now });
+  } catch (error) {
+    const message = error instanceof Error ? error.message.slice(0, 500) : "Unknown real-time quote publish error";
+    return context.json({ error: "Real-time quote publication failed.", details: message }, 500);
+  }
+});
+
+app.get("/api/saved-strategies", async (context) => {
+  const user = await requireUser(context);
+  if (user instanceof Response) return user;
+  const rows = await context.env.DB.prepare(
+    "SELECT id, name, rule_json, created_at, updated_at FROM saved_strategies WHERE user_id = ? ORDER BY updated_at DESC",
+  ).bind(user.id).all<{ id: string; name: string; rule_json: string; created_at: string; updated_at: string }>();
+  return context.json({ items: rows.results.flatMap((row) => {
+    try {
+      return [{ id: row.id, name: row.name, rule: ruleScreenerSchema.parse(JSON.parse(row.rule_json)), createdAt: row.created_at, updatedAt: row.updated_at }];
+    } catch {
+      return [];
+    }
+  }) });
+});
+
+app.post("/api/saved-strategies", async (context) => {
+  const user = await requireUser(context);
+  if (user instanceof Response) return user;
+  const body = savedStrategySchema.safeParse(await context.req.json());
+  if (!body.success) return context.json({ error: "策略格式无效。" }, 400);
+  const now = new Date().toISOString();
+  const id = crypto.randomUUID();
+  await context.env.DB.prepare(
+    `INSERT INTO saved_strategies (id, user_id, name, rule_json, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(user_id, name) DO UPDATE SET rule_json = excluded.rule_json, updated_at = excluded.updated_at`,
+  ).bind(id, user.id, body.data.name, JSON.stringify(body.data.rule), now, now).run();
+  const saved = await context.env.DB.prepare(
+    "SELECT id, name, rule_json, created_at, updated_at FROM saved_strategies WHERE user_id = ? AND name = ?",
+  ).bind(user.id, body.data.name).first<{ id: string; name: string; rule_json: string; created_at: string; updated_at: string }>();
+  if (!saved) return context.json({ error: "策略保存失败。" }, 500);
+  return context.json({ item: { id: saved.id, name: saved.name, rule: ruleScreenerSchema.parse(JSON.parse(saved.rule_json)), createdAt: saved.created_at, updatedAt: saved.updated_at } }, 201);
+});
+
+app.delete("/api/saved-strategies/:id", async (context) => {
+  const user = await requireUser(context);
+  if (user instanceof Response) return user;
+  await context.env.DB.prepare("DELETE FROM saved_strategies WHERE id = ? AND user_id = ?")
+    .bind(context.req.param("id"), user.id).run();
+  return context.body(null, 204);
 });
 
 app.get("/api/watchlist", async (context) => {
@@ -768,6 +956,18 @@ interface ScreenerRow {
   volatility_20: number | null;
 }
 
+interface SectorHeatmapRow {
+  industry: string;
+  stock_count: number;
+  trade_date: string | null;
+  money_flow_date: string | null;
+  turnover_amount: number;
+  main_net_inflow: number;
+  money_flow_count: number;
+  main_net_inflow_ratio: number | null;
+  pct_change: number | null;
+}
+
 interface DataRefreshRow {
   id: string;
   status: "queued" | "running" | "completed" | "failed";
@@ -844,6 +1044,20 @@ function toScreenerItem(row: ScreenerRow) {
     ma20Slope: row.ma20_slope,
     volumeRatio20: row.volume_ratio_20,
     volatility20: row.volatility_20,
+  };
+}
+
+function toSectorHeatmapItem(row: SectorHeatmapRow) {
+  return {
+    industry: row.industry,
+    stockCount: row.stock_count,
+    tradeDate: row.trade_date,
+    moneyFlowDate: row.money_flow_date,
+    turnoverAmount: row.turnover_amount,
+    mainNetInflow: row.main_net_inflow,
+    moneyFlowCount: row.money_flow_count,
+    mainNetInflowRatio: row.main_net_inflow_ratio,
+    pctChange: row.pct_change,
   };
 }
 

@@ -1,6 +1,7 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { hierarchy, treemap } from "d3-hierarchy";
 
-import { api, DataRefresh, MarketIndexItem, Recommendation, RuleCondition, RuleScreenerRequest, ScreenerItem, ScreenerQuery, User, WatchlistItem } from "./api";
+import { api, DataRefresh, MarketIndexItem, Recommendation, RuleCondition, RuleDataCapabilities, RuleScreenerRequest, SavedStrategy, ScreenerItem, ScreenerQuery, SectorHeatmapItem, User, WatchlistItem } from "./api";
 import "./styles.css";
 
 type FilterState = Omit<ScreenerQuery, "page" | "pageSize">;
@@ -29,6 +30,90 @@ function formatNumber(value: number | null, digits = 2): string {
 function formatPercent(value: number | null): string {
   return value === null ? "-" : `${value >= 0 ? "+" : ""}${value.toFixed(2)}%`;
 }
+
+function formatRatioPercent(value: number | null): string {
+  return value === null ? "-" : `${value >= 0 ? "+" : ""}${(value * 100).toFixed(2)}%`;
+}
+
+const TECHNICAL_RULE_PRESETS: Array<{ label: string; conditions: RuleCondition[] }> = [
+  {
+    label: "趋势突破",
+    conditions: [
+      { field: "ret20d", op: ">=", value: 0.08 },
+      { field: "ma20Slope", op: ">=", value: 0.01 },
+      { field: "volumeRatio20", op: ">=", value: 1.2 },
+      { field: "rsi14", op: ">=", value: 55 },
+      { field: "rsi14", op: "<=", value: 75 },
+      { field: "score", op: ">=", value: 70 },
+    ],
+  },
+  {
+    label: "回踩上升趋势",
+    conditions: [
+      { field: "ret60d", op: ">=", value: 0.12 },
+      { field: "ma20Slope", op: ">=", value: 0.005 },
+      { field: "distanceHigh20", op: ">=", value: -0.06 },
+      { field: "rsi14", op: ">=", value: 45 },
+      { field: "rsi14", op: "<=", value: 62 },
+      { field: "score", op: ">=", value: 65 },
+    ],
+  },
+  {
+    label: "低波动趋势",
+    conditions: [
+      { field: "ret20d", op: ">=", value: 0.03 },
+      { field: "ma20Slope", op: ">=", value: 0 },
+      { field: "volatility20", op: "<=", value: 0.28 },
+      { field: "maxDrawdown60", op: ">=", value: -0.15 },
+      { field: "score", op: ">=", value: 65 },
+    ],
+  },
+  {
+    label: "放量启动",
+    conditions: [
+      { field: "ret5d", op: ">=", value: 0.02 },
+      { field: "volumeRatio5", op: ">=", value: 1.2 },
+      { field: "amountRatio5", op: ">=", value: 1.15 },
+      { field: "ma20Slope", op: ">=", value: 0 },
+      { field: "rsi14", op: ">=", value: 50 },
+      { field: "rsi14", op: "<=", value: 70 },
+    ],
+  },
+  {
+    label: "中期强势",
+    conditions: [
+      { field: "ret60d", op: ">=", value: 0.2 },
+      { field: "ret20d", op: ">=", value: 0.05 },
+      { field: "pricePercentile250", op: ">=", value: 0.7 },
+      { field: "distanceHigh60", op: ">=", value: -0.08 },
+      { field: "score", op: ">=", value: 75 },
+    ],
+  },
+];
+
+const OPTIONAL_RULE_FIELD_CAPABILITIES: Partial<Record<RuleCondition["field"], keyof RuleDataCapabilities>> = {
+  industry: "industry",
+  mainNetInflow: "moneyFlow",
+  mainNetInflowPct: "moneyFlow",
+  superLargeNetInflow: "moneyFlow",
+  largeNetInflow: "moneyFlow",
+  mediumNetInflow: "moneyFlow",
+  smallNetInflow: "moneyFlow",
+  mainNetInflow3d: "moneyFlow",
+  mainNetInflow5d: "moneyFlow",
+  mainNetInflow10d: "moneyFlow",
+  peTtm: "valuation",
+  pb: "valuation",
+  totalMarketCap: "valuation",
+  floatMarketCap: "valuation",
+  roe: "financial",
+  revenueYoy: "financial",
+  profitYoy: "financial",
+  grossMargin: "financial",
+  debtRatio: "financial",
+  revenue: "financial",
+  netProfit: "financial",
+};
 
 function marketDate(item: Pick<ScreenerItem | MarketIndexItem, "quoteDate" | "tradeDate">): string {
   return item.quoteDate ?? item.tradeDate;
@@ -83,7 +168,7 @@ function MarketIndexOverview({ items }: { items: MarketIndexItem[] }) {
             <span className={item.pctChange !== null && item.pctChange < 0 ? "negative" : "positive"}>
               {formatPercent(item.pctChange)}
             </span>
-            <small>20d {formatPercent(item.ret20d)}</small>
+            <small>20d {formatRatioPercent(item.ret20d)}</small>
             <small className={isStale || isHistoryStale ? "index-date stale" : "index-date"} title={`Historical factors: ${item.tradeDate}`}>
               As of {displayDate}{item.quoteTime ? ` ${item.quoteTime}` : ""}{isStale ? " (quote stale)" : ""}{isHistoryStale ? ` (history ${item.tradeDate} stale)` : ""}
             </small>
@@ -109,7 +194,12 @@ export default function App() {
   const [refreshError, setRefreshError] = useState<string | null>(null);
   const [filters, setFilters] = useState<FilterState>(emptyFilters);
   const [items, setItems] = useState<ScreenerItem[]>([]);
-  const [marketHeatmapItems, setMarketHeatmapItems] = useState<ScreenerItem[]>([]);
+  const [marketHeatmap, setMarketHeatmap] = useState<{
+    items: SectorHeatmapItem[];
+    asOf: string | null;
+    moneyFlowAsOf: string | null;
+    moneyFlowAvailable: boolean;
+  }>({ items: [], asOf: null, moneyFlowAsOf: null, moneyFlowAvailable: false });
   const [top10Items, setTop10Items] = useState<ScreenerItem[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -198,9 +288,9 @@ export default function App() {
   const loadMarketHeatmap = useCallback(async () => {
     try {
       const result = await api.marketHeatmap();
-      setMarketHeatmapItems(result.items);
+      setMarketHeatmap(result);
     } catch {
-      setMarketHeatmapItems([]);
+      setMarketHeatmap({ items: [], asOf: null, moneyFlowAsOf: null, moneyFlowAvailable: false });
     }
   }, []);
 
@@ -325,6 +415,15 @@ export default function App() {
     void loadScreen(nextFilters, 1);
   }
 
+  function handleSelectIndustry(industry: string) {
+    const nextFilters: FilterState = { ...emptyFilters, industry };
+    setFilters(nextFilters);
+    setCategoryTab("all");
+    setNavTab("screener");
+    setPage(1);
+    void loadScreen(nextFilters, 1);
+  }
+
   async function addToWatchlist(code: string) {
     if (!user) {
       setShowLogin(true);
@@ -424,7 +523,7 @@ export default function App() {
             <div className="breadth-stat">
               <span className="b-label">当前池平均20日涨幅</span>
               <span className={`b-val ${marketStats.avgRet >= 0 ? "positive" : "negative"}`}>
-                {formatPercent(marketStats.avgRet)}
+                {formatRatioPercent(marketStats.avgRet)}
               </span>
             </div>
             <div className="breadth-stat">
@@ -583,9 +682,9 @@ export default function App() {
 
         {/* VIEW 2: HEATMAP (市场全景热力图) */}
         {navTab === "heatmap" && (
-          <MarketHeatmapViewV2
-            items={marketHeatmapItems}
-            onSelectStock={(item) => handleSelectStock(item, false)}
+          <SectorFundTreemap
+            {...marketHeatmap}
+            onSelectIndustry={handleSelectIndustry}
           />
         )}
 
@@ -808,7 +907,7 @@ function ScreenerTable({
               </td>
               <td className="price-cell">¥ {formatNumber(item.close)}</td>
               <td className={item.ret20d !== null && item.ret20d < 0 ? "negative" : "positive"}>
-                {formatPercent(item.ret20d)}
+                {formatRatioPercent(item.ret20d)}
               </td>
               <td>{formatNumber(item.turnoverRate)}%</td>
               <td>{formatNumber(item.volatility20)}</td>
@@ -986,7 +1085,7 @@ function MarketHeatmapView({
               <div className="sector-header">
                 <strong>{sec.industry}</strong>
                 <span className={sec.avgRet >= 0 ? "positive" : "negative"}>
-                  {metricType === "ret20" ? formatPercent(sec.avgRet) : `均分: ${sec.avgScore.toFixed(1)}`}
+                  {metricType === "ret20" ? formatRatioPercent(sec.avgRet) : `均分: ${sec.avgScore.toFixed(1)}`}
                 </span>
               </div>
               <div className="stock-tiles-container">
@@ -998,11 +1097,11 @@ function MarketHeatmapView({
                       className="stock-heat-tile"
                       style={{ backgroundColor: bg }}
                       onClick={() => onSelectStock(stk)}
-                      title={`${stk.name} (${stk.code})\n价格: ¥${stk.close}\n20日涨幅: ${formatPercent(stk.ret20d)}\n综合得分: ${stk.score}`}
+                      title={`${stk.name} (${stk.code})\n价格: ¥${stk.close}\n20日涨幅: ${formatRatioPercent(stk.ret20d)}\n综合得分: ${stk.score}`}
                     >
                       <span className="tile-name">{stk.name}</span>
                       <span className="tile-metric">
-                        {metricType === "ret20" ? formatPercent(stk.ret20d) : formatNumber(stk.score, 1)}
+                        {metricType === "ret20" ? formatRatioPercent(stk.ret20d) : formatNumber(stk.score, 1)}
                       </span>
                     </div>
                   );
@@ -1025,6 +1124,109 @@ function MarketHeatmapView({
 }
 
 /** Sector heatmap: uses the independent all-market endpoint, never the search result. */
+function formatFundAmount(value: number): string {
+  const absolute = Math.abs(value);
+  if (absolute >= 1e8) return `${(value / 1e8).toFixed(1)}亿`;
+  if (absolute >= 1e4) return `${(value / 1e4).toFixed(0)}万`;
+  return value.toFixed(0);
+}
+
+function fundFlowColor(ratio: number | null): string {
+  if (ratio === null) return "#64748b";
+  if (ratio >= 0.02) return "#991b1b";
+  if (ratio >= 0.01) return "#dc2626";
+  if (ratio > 0) return "#f87171";
+  if (ratio <= -0.02) return "#166534";
+  if (ratio <= -0.01) return "#16a34a";
+  if (ratio < 0) return "#4ade80";
+  return "#94a3b8";
+}
+
+function SectorFundTreemap({
+  items,
+  asOf,
+  moneyFlowAsOf,
+  moneyFlowAvailable,
+  onSelectIndustry,
+}: {
+  items: SectorHeatmapItem[];
+  asOf: string | null;
+  moneyFlowAsOf: string | null;
+  moneyFlowAvailable: boolean;
+  onSelectIndustry: (industry: string) => void;
+}) {
+  const leaves = useMemo(() => {
+    type TreeNode = SectorHeatmapItem | { children: SectorHeatmapItem[] };
+    const root = hierarchy<TreeNode>({ children: items })
+      .sum((node) => "turnoverAmount" in node ? Math.max(node.turnoverAmount, 1) : 0)
+      .sort((left, right) => (right.value ?? 0) - (left.value ?? 0));
+    return treemap<TreeNode>().size([1000, 560]).paddingInner(4).paddingOuter(2).round(true)(root).leaves()
+      .map((leaf) => ({ ...leaf, sector: leaf.data as SectorHeatmapItem }));
+  }, [items]);
+
+  return (
+    <section className="view-container heatmap-view sector-fund-heatmap">
+      <div className="section-heading">
+        <div>
+          <h2>板块资金热力图</h2>
+          <span>面积按板块成交额，颜色按主力净流入率</span>
+        </div>
+        <div className="heatmap-asof">
+          <span>成交额 {asOf ?? "-"}</span>
+          <span>资金流 {moneyFlowAsOf ?? "-"}</span>
+        </div>
+      </div>
+      <div className="heatmap-legend sector-fund-legend">
+        <span className="legend-down">净流出</span><i className="legend-down-swatch" /><span>平衡</span><i className="legend-flat" /><span>净流入</span><i className="legend-up" /><em>点击板块查看对应行业股票</em>
+      </div>
+      {!moneyFlowAvailable && <p className="heatmap-data-warning">资金流数据待日终同步，当前仅展示板块成交额。</p>}
+      {!leaves.length ? <div className="empty">暂无可用于板块聚合的成交额和行业数据。</div> : (
+        <svg className="sector-fund-treemap" viewBox="0 0 1000 560" role="img" aria-label="按成交额面积展示的板块资金热力图">
+          {leaves.map((leaf) => {
+            const { sector } = leaf;
+            const width = leaf.x1 - leaf.x0;
+            const height = leaf.y1 - leaf.y0;
+            const showTitle = width >= 72 && height >= 30;
+            const showFlow = width >= 130 && height >= 58;
+            const showMeta = width >= 250 && height >= 78;
+            const titleLength = Math.max(3, Math.floor((width - 20) / 15));
+            const title = sector.industry.length > titleLength
+              ? `${sector.industry.slice(0, titleLength - 1)}...`
+              : sector.industry;
+            const flowRatio = sector.mainNetInflowRatio === null ? "资金流待同步" : formatRatioPercent(sector.mainNetInflowRatio);
+            return (
+              <g
+                key={sector.industry}
+                className="sector-fund-tile"
+                role="button"
+                tabIndex={0}
+                transform={`translate(${leaf.x0}, ${leaf.y0})`}
+                onClick={() => onSelectIndustry(sector.industry)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    onSelectIndustry(sector.industry);
+                  }
+                }}
+              >
+                <title>{`${sector.industry}\n成交额 ${formatFundAmount(sector.turnoverAmount)}\n主力净流入 ${formatFundAmount(sector.mainNetInflow)}\n净流入率 ${flowRatio}\n成分股 ${sector.stockCount} 只`}</title>
+                <rect width={width} height={height} fill={fundFlowColor(sector.mainNetInflowRatio)} rx="2" />
+                {showTitle && <text className="sector-fund-name" x="10" y="24">{title}</text>}
+                {showFlow && <>
+                  <text className="sector-fund-value" x="10" y="47">{flowRatio}</text>
+                </>}
+                {showMeta && <>
+                  <text className="sector-fund-meta" x="10" y="67">成交额 {formatFundAmount(sector.turnoverAmount)} · {sector.stockCount} 只</text>
+                </>}
+              </g>
+            );
+          })}
+        </svg>
+      )}
+    </section>
+  );
+}
+
 function MarketHeatmapViewV2({
   items,
   onSelectStock,
@@ -1087,14 +1289,15 @@ function MarketHeatmapViewV2({
             <section key={sector.industry} className="sector-treemap-block" style={{ gridColumn: `span ${sector.cap >= 5e11 ? 2 : 1}` }}>
               <header className="sector-treemap-header" style={{ borderColor: color(sector.average) }}>
                 <strong>{sector.industry} <small>{sector.stocks.length}只</small></strong>
-                <span className={(sector.average ?? 0) >= 0 ? "positive" : "negative"}>{formatPercent(sector.average)}</span>
+                <span className={(sector.average ?? 0) >= 0 ? "positive" : "negative"}>{metric === "day" ? formatPercent(sector.average) : formatRatioPercent(sector.average)}</span>
               </header>
               <div className="sector-stock-tiles">
                 {sector.stocks.slice(0, 42).map((stock) => {
                   const marketCap = stock.floatMarketCap ?? stock.totalMarketCap ?? 1e8;
                   const grow = Math.max(1, Math.min(5, Math.log10(marketCap / 1e8 + 1)));
-                  return <button key={stock.code} className="sector-stock-tile" style={{ backgroundColor: color(value(stock)), flexGrow: grow }} onClick={() => onSelectStock(stock)} title={`${stock.name} ${stock.code}\n${label}: ${formatPercent(value(stock))}`}>
-                    <span>{stock.name}</span><b>{formatPercent(value(stock))}</b>
+                  const formattedValue = metric === "day" ? formatPercent(value(stock)) : formatRatioPercent(value(stock));
+                  return <button key={stock.code} className="sector-stock-tile" style={{ backgroundColor: color(value(stock)), flexGrow: grow }} onClick={() => onSelectStock(stock)} title={`${stock.name} ${stock.code}\n${label}: ${formattedValue}`}>
+                    <span>{stock.name}</span><b>{formattedValue}</b>
                   </button>;
                 })}
                 {sector.stocks.length > 42 && <span className="sector-more-tile">+{sector.stocks.length - 42}只</span>}
@@ -1169,7 +1372,7 @@ function RecommendationsView({
       referenceClose: s.close ?? 0,
       referenceDate: s.tradeDate,
       latestClose: s.close,
-      returnPct: s.ret20d,
+      returnPct: s.ret20d === null ? null : s.ret20d * 100,
       screenerItem: s,
     }));
   }, [recommendations, screenerItems]);
@@ -1269,6 +1472,10 @@ function CustomRuleScreenerView({
   const [error, setError] = useState<string | null>(null);
   const [jsonInput, setJsonInput] = useState("");
   const [promptCopied, setPromptCopied] = useState(false);
+  const [ruleDataCapabilities, setRuleDataCapabilities] = useState<RuleDataCapabilities | null>(null);
+  const [strategyName, setStrategyName] = useState("");
+  const [savedStrategies, setSavedStrategies] = useState<SavedStrategy[]>([]);
+  const [savingStrategy, setSavingStrategy] = useState(false);
   const fields: Array<{ value: RuleCondition["field"]; label: string; numeric: boolean }> = [
     { value: "score", label: "综合评分", numeric: true }, { value: "ret5d", label: "5日涨幅（0.05=5%）", numeric: true },
     { value: "ret20d", label: "20日涨幅（0.05=5%）", numeric: true }, { value: "ret60d", label: "60日涨幅（0.05=5%）", numeric: true }, { value: "ret120d", label: "120日涨幅（0.05=5%）", numeric: true }, { value: "ret250d", label: "250日涨幅（0.05=5%）", numeric: true },
@@ -1282,8 +1489,73 @@ function CustomRuleScreenerView({
     { value: "close", label: "最新价", numeric: true }, { value: "industry", label: "所属行业", numeric: false }, { value: "market", label: "市场", numeric: false },
   ];
   const fieldMeta = (field: RuleCondition["field"]) => fields.find((item) => item.value === field)!;
+  const availableFields = fields.filter((field) => {
+    const capability = OPTIONAL_RULE_FIELD_CAPABILITIES[field.value];
+    return !capability || ruleDataCapabilities === null || ruleDataCapabilities[capability];
+  });
+  const isUnavailableField = (field: RuleCondition["field"]) => {
+    const capability = OPTIONAL_RULE_FIELD_CAPABILITIES[field];
+    return capability !== undefined && ruleDataCapabilities !== null && !ruleDataCapabilities[capability];
+  };
+  useEffect(() => {
+    void api.ruleDataCapabilities().then(setRuleDataCapabilities).catch(() => setRuleDataCapabilities(null));
+  }, []);
+  useEffect(() => {
+    if (!user) {
+      setSavedStrategies([]);
+      return;
+    }
+    void api.savedStrategies().then(({ items }) => setSavedStrategies(items)).catch(() => setSavedStrategies([]));
+  }, [user]);
   const aiGenerationPrompt = `请将下面的选股想法转换为本系统支持的 JSON，不要输出 Markdown、解释或任何额外文字。\n\n输出结构：{ "logic": "AND" | "OR", "excludeSt": true | false, "sortBy": "score" | "price" | "ret20" | "turnover" | "volatility", "sortDirection": "asc" | "desc", "conditions": [{ "field": string, "op": string, "value": number|string }] }\n\n所有数值字段的 value 必须是数字，op 只能是 >、>=、<、<=、==、!=。技术字段：score；ret5d/ret20d/ret60d/ret120d/ret250d；ma20Slope；volumeRatio5/volumeRatio20；amount/amountRatio5/amountRatio20（元/比值）；rsi14（0-100）；volatility20/volatility60；maxDrawdown60；distanceHigh20/distanceHigh60/distanceHigh250/distanceLow250；pricePercentile250（0-1）；turnoverRate；close。\n\n资金字段（元或百分比）：mainNetInflow、mainNetInflowPct、superLargeNetInflow、largeNetInflow、mediumNetInflow、smallNetInflow、mainNetInflow3d、mainNetInflow5d、mainNetInflow10d。\n\n估值字段：peTtm（市盈率 TTM）、pb（市净率）、totalMarketCap（总市值，元）、floatMarketCap（流通市值，元）。财务字段（百分比或元）：roe、revenueYoy、profitYoy、grossMargin、debtRatio、revenue、netProfit。\n\n文本字段：industry=所属行业；market=市场。文本 value 必须非空，op 只能是 contains、==、!=。conditions 至少 1 条、最多 20 条；AND 表示全部满足，OR 表示任一满足。不要使用未列出的字段、运算符、括号、嵌套对象、自然语言条件或空值。\n\n示例：{"logic":"AND","excludeSt":true,"sortBy":"score","sortDirection":"desc","conditions":[{"field":"roe","op":">=","value":12},{"field":"profitYoy","op":">=","value":20},{"field":"mainNetInflow5d","op":">=","value":100000000}]}`;
   const addCondition = () => { if (conditions.length < 20) setConditions([...conditions, { field: "ret20d", op: ">=", value: 0 }]); };
+  function applyPreset(preset: (typeof TECHNICAL_RULE_PRESETS)[number]) {
+    setConditions(preset.conditions);
+    setLogic("AND");
+    setExcludeSt(true);
+    setSortBy("score");
+    setSortDirection("desc");
+    setMatchedItems([]);
+    setTotal(null);
+    setError(null);
+  }
+  function applySavedStrategy(strategy: SavedStrategy) {
+    setConditions(strategy.rule.conditions);
+    setLogic(strategy.rule.logic);
+    setExcludeSt(strategy.rule.excludeSt);
+    setSortBy(strategy.rule.sortBy);
+    setSortDirection(strategy.rule.sortDirection);
+    setMatchedItems([]);
+    setTotal(null);
+    setError(null);
+  }
+  async function saveCurrentStrategy() {
+    if (!user || !strategyName.trim()) return;
+    const unavailable = conditions.find((condition) => isUnavailableField(condition.field));
+    if (unavailable) {
+      setError("所选字段的数据尚未就绪。");
+      return;
+    }
+    setSavingStrategy(true);
+    try {
+      const rule = { logic, conditions, excludeSt, sortBy, sortDirection };
+      const { item } = await api.saveStrategy(strategyName.trim(), rule);
+      setSavedStrategies((current) => [item, ...current.filter((strategy) => strategy.id !== item.id)]);
+      setStrategyName("");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "策略保存失败。");
+    } finally {
+      setSavingStrategy(false);
+    }
+  }
+  async function removeSavedStrategy(strategy: SavedStrategy) {
+    try {
+      await api.removeStrategy(strategy.id);
+      setSavedStrategies((current) => current.filter((item) => item.id !== strategy.id));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "策略删除失败。");
+    }
+  }
   function updateCondition(index: number, update: Partial<RuleCondition>) {
     setConditions(conditions.map((condition, position) => {
       if (position !== index) return condition;
@@ -1293,6 +1565,11 @@ function CustomRuleScreenerView({
     }));
   }
   async function runScreener() {
+    const unavailable = conditions.find((condition) => isUnavailableField(condition.field));
+    if (unavailable) {
+      setError("所选字段的数据尚未就绪。");
+      return;
+    }
     setLoading(true); setError(null);
     try { const result = await api.ruleScreener({ logic, conditions, excludeSt, sortBy, sortDirection, page: 1, pageSize: 100 }); setMatchedItems(result.items); setTotal(result.total); }
     catch (reason) { setError(reason instanceof Error ? reason.message : "规则选股执行失败。"); setMatchedItems([]); setTotal(null); }
@@ -1309,6 +1586,7 @@ function CustomRuleScreenerView({
         const item = condition as Partial<RuleCondition>;
         const meta = fields.find((field) => field.value === item.field);
         if (!meta) throw new Error(`第 ${index + 1} 条使用了不支持的字段。`);
+        if (isUnavailableField(meta.value)) throw new Error(`第 ${index + 1} 条依赖的数据尚未就绪。`);
         const allowedOps = meta.numeric ? [">", ">=", "<", "<=", "==", "!="] : ["contains", "==", "!="];
         if (!item.op || !allowedOps.includes(item.op)) throw new Error(`第 ${index + 1} 条的比较符不适用于 ${meta.label}。`);
         if (meta.numeric && (typeof item.value !== "number" || !Number.isFinite(item.value))) throw new Error(`第 ${index + 1} 条的 ${meta.label} 必须是数值。`);
@@ -1354,6 +1632,19 @@ function CustomRuleScreenerView({
         <span className="preset-label">排序</span>
         <select value={sortBy} onChange={(event) => setSortBy(event.target.value as RuleScreenerRequest["sortBy"])}><option value="score">综合评分</option><option value="ret20">20日涨幅</option><option value="price">最新价</option><option value="turnover">换手率</option><option value="volatility">波动率</option></select>
         <select value={sortDirection} onChange={(event) => setSortDirection(event.target.value as RuleScreenerRequest["sortDirection"])}><option value="desc">从高到低</option><option value="asc">从低到高</option></select>
+        <span className="preset-label">技术策略</span>
+        <div className="preset-buttons" aria-label="技术策略">
+          {TECHNICAL_RULE_PRESETS.map((preset) => <button className="preset-btn" key={preset.label} onClick={() => applyPreset(preset)}>{preset.label}</button>)}
+        </div>
+        {user && savedStrategies.length > 0 && <>
+          <span className="preset-label">已保存</span>
+          <div className="preset-buttons" aria-label="已保存策略">
+            {savedStrategies.map((strategy) => <span className="saved-strategy-chip" key={strategy.id}>
+              <button className="preset-btn" onClick={() => applySavedStrategy(strategy)}>{strategy.name}</button>
+              <button className="text-button saved-strategy-delete" aria-label={`删除策略 ${strategy.name}`} title="删除策略" onClick={() => void removeSavedStrategy(strategy)}>x</button>
+            </span>)}
+          </div>
+        </>}
       </div>
 
       <div className="rule-editor-box">
@@ -1380,13 +1671,17 @@ function CustomRuleScreenerView({
           const options = meta.numeric ? [">", ">=", "<", "<=", "==", "!="] : ["contains", "==", "!="];
           return <div className="rule-condition-row" key={`${condition.field}-${index}`}>
             <span className="rule-condition-index">{index + 1}</span>
-            <select value={condition.field} onChange={(event) => updateCondition(index, { field: event.target.value as RuleCondition["field"] })}>{fields.map((field) => <option key={field.value} value={field.value}>{field.label}</option>)}</select>
+            <select value={condition.field} onChange={(event) => updateCondition(index, { field: event.target.value as RuleCondition["field"] })}>{availableFields.map((field) => <option key={field.value} value={field.value}>{field.label}</option>)}</select>
             <select value={condition.op} onChange={(event) => updateCondition(index, { op: event.target.value as RuleCondition["op"] })}>{options.map((op) => <option key={op} value={op}>{op === "contains" ? "包含" : op}</option>)}</select>
             <input type={meta.numeric ? "number" : "text"} value={condition.value} step="any" placeholder={meta.numeric ? "请输入数值" : "如：半导体"} onChange={(event) => updateCondition(index, { value: meta.numeric ? Number(event.target.value) : event.target.value })} />
             <button className="text-button clear-btn" disabled={conditions.length === 1} onClick={() => setConditions(conditions.filter((_, position) => position !== index))}>删除</button>
           </div>;
         })}
         <div className="rule-editor-actions">
+          {user && <>
+            <input className="strategy-name-input" value={strategyName} maxLength={60} placeholder="策略名称" onChange={(event) => setStrategyName(event.target.value)} />
+            <button className="secondary-button" disabled={savingStrategy || !strategyName.trim()} onClick={() => void saveCurrentStrategy()}>{savingStrategy ? "正在保存..." : "保存策略"}</button>
+          </>}
           <button className="secondary-button" disabled={conditions.length >= 20} onClick={addCondition}>+ 增加选股标准</button>
           <button className="primary-button" disabled={loading} onClick={() => void runScreener()}>{loading ? "正在执行…" : "执行全市场选股"}</button>
         </div>
@@ -1530,7 +1825,7 @@ function StockDetailPage({
           <div className="metric-cell">
             <span className="metric-label">20日收益率</span>
             <span className={`metric-num ${stock.ret20d !== null && stock.ret20d < 0 ? "negative" : "positive"}`}>
-              {formatPercent(stock.ret20d)}
+              {formatRatioPercent(stock.ret20d)}
             </span>
           </div>
           <div className="metric-cell">
@@ -1621,7 +1916,7 @@ function StockDetailPage({
                 <div className="diag-card-header">
                   <span className="diag-icon">📈</span>
                   <strong>趋势维度 (Trend)</strong>
-                  <span className="diag-val">{formatPercent(stock.ma20Slope)}</span>
+                  <span className="diag-val">{formatRatioPercent(stock.ma20Slope)}</span>
                 </div>
                 <p className="diag-text">{trendDesc}</p>
               </div>
@@ -1630,7 +1925,7 @@ function StockDetailPage({
                 <div className="diag-card-header">
                   <span className="diag-icon">⚡</span>
                   <strong>动量维度 (Momentum)</strong>
-                  <span className="diag-val">{formatPercent(stock.ret20d)}</span>
+                  <span className="diag-val">{formatRatioPercent(stock.ret20d)}</span>
                 </div>
                 <p className="diag-text">{momentumDesc}</p>
               </div>
@@ -1659,19 +1954,19 @@ function StockDetailPage({
               <div className="factor-grid-full">
                 <div className="factor-pill">
                   <span>5日累计收益</span>
-                  <strong>{formatPercent(stock.ret5d)}</strong>
+                  <strong>{formatRatioPercent(stock.ret5d)}</strong>
                 </div>
                 <div className="factor-pill">
                   <span>20日累计收益</span>
-                  <strong>{formatPercent(stock.ret20d)}</strong>
+                  <strong>{formatRatioPercent(stock.ret20d)}</strong>
                 </div>
                 <div className="factor-pill">
                   <span>60日累计收益</span>
-                  <strong>{formatPercent(stock.ret60d)}</strong>
+                  <strong>{formatRatioPercent(stock.ret60d)}</strong>
                 </div>
                 <div className="factor-pill">
                   <span>20日均线斜率</span>
-                  <strong>{formatPercent(stock.ma20Slope)}</strong>
+                  <strong>{formatRatioPercent(stock.ma20Slope)}</strong>
                 </div>
                 <div className="factor-pill">
                   <span>20日平均量比</span>

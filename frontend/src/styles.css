@@ -174,6 +174,30 @@ td strong, td small { display: block; }
 .sector-stock-tile:hover { transform: scale(1.04); box-shadow: 0 3px 10px rgba(0,0,0,.25); z-index: 1; }
 .sector-stock-tile span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; font-weight: 600; }.sector-stock-tile b { font-size: 12px; }
 .sector-more-tile { min-width: 78px; min-height: 45px; display: grid; place-items: center; color: var(--text-sub); background: var(--bg-subtle); border-radius: 5px; font-size: 12px; }
+.sector-fund-heatmap { min-height: 0; }
+.heatmap-asof { display: flex; gap: 12px; color: var(--text-sub); font-size: 12px; white-space: nowrap; }
+.legend-down-swatch { background: #16a34a; }
+.heatmap-data-warning { margin: 0; color: #a16207; font-size: 13px; }
+.sector-fund-treemap { width: 100%; min-height: 340px; aspect-ratio: 25 / 14; display: block; border: 1px solid var(--border-color); background: var(--bg-card); }
+.sector-fund-tile { cursor: pointer; outline: none; }
+.sector-fund-tile rect { stroke: rgba(255, 255, 255, .78); stroke-width: 1; transition: opacity .15s, stroke-width .15s; }
+.sector-fund-tile:hover rect, .sector-fund-tile:focus rect { opacity: .88; stroke: #0f172a; stroke-width: 3; }
+.sector-fund-tile text { fill: #fff; pointer-events: none; text-shadow: 0 1px 2px rgba(0, 0, 0, .45); }
+.sector-fund-name { font-size: 18px; font-weight: 700; }
+.sector-fund-value { font-size: 16px; font-weight: 700; }
+.sector-fund-meta { font-size: 12px; opacity: .92; }
+.sector-fund-heatmap { min-height: 0; }
+.heatmap-asof { display: flex; gap: 12px; color: var(--text-sub); font-size: 12px; white-space: nowrap; }
+.legend-down-swatch { background: #16a34a; }
+.heatmap-data-warning { margin: 0; color: #a16207; font-size: 13px; }
+.sector-fund-treemap { width: 100%; min-height: 340px; aspect-ratio: 25 / 14; display: block; border: 1px solid var(--border-color); background: var(--bg-card); }
+.sector-fund-tile { cursor: pointer; outline: none; }
+.sector-fund-tile rect { stroke: rgba(255, 255, 255, .78); stroke-width: 1; transition: opacity .15s, stroke-width .15s; }
+.sector-fund-tile:hover rect, .sector-fund-tile:focus rect { opacity: .88; stroke: #0f172a; stroke-width: 3; }
+.sector-fund-tile text { fill: #fff; pointer-events: none; text-shadow: 0 1px 2px rgba(0, 0, 0, .45); }
+.sector-fund-name { font-size: 18px; font-weight: 700; }
+.sector-fund-value { font-size: 16px; font-weight: 700; }
+.sector-fund-meta { font-size: 12px; opacity: .92; }
 
 /* ------------------- RECOMMENDATIONS ------------------- */
 .recommendations-view { display: flex; flex-direction: column; gap: 18px; }
@@ -205,10 +229,13 @@ td strong, td small { display: block; }
 .preset-buttons { display: flex; gap: 8px; flex-wrap: wrap; }
 .preset-btn { background: var(--bg-subtle); color: var(--text-main); border: 1px solid var(--border-color); font-size: 13px; font-weight: 600; padding: 5px 12px; border-radius: 6px; transition: all 0.15s; }
 .preset-btn:hover { background: var(--primary); color: #fff; border-color: var(--primary); }
+.saved-strategy-chip { display: inline-flex; align-items: center; gap: 3px; }
+.saved-strategy-delete { min-height: 28px; min-width: 24px; padding: 0 5px; color: var(--text-sub); }
 
 .rule-editor-box { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 8px; padding: 18px; display: flex; flex-direction: column; gap: 12px; }
 .rule-textarea { width: 100%; min-height: 110px; font-family: "Consolas", "Courier New", monospace; font-size: 14px; line-height: 1.5; padding: 12px; background: var(--bg-subtle); border-color: var(--border-color); border-radius: 6px; resize: vertical; }
 .rule-editor-actions { display: flex; gap: 10px; align-items: center; }
+.strategy-name-input { min-width: 140px; flex: 1 1 160px; max-width: 240px; }
 .clear-btn { color: var(--text-sub); font-size: 13px; margin-left: auto; }
 .rule-switch { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-main); }
 .rule-builder-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
@@ -332,6 +359,8 @@ td strong, td small { display: block; }
 }
 @media (max-width: 640px) {
   .app-shell { width: min(100% - 16px, 1340px); padding-top: 16px; }
+  .heatmap-asof { width: 100%; justify-content: space-between; }
+  .sector-fund-treemap { min-height: 260px; }
   .market-breadth-banner { grid-template-columns: 1fr; }
   .key-metrics-banner { grid-template-columns: repeat(2, 1fr); padding: 12px 16px; }
   .detail-header { padding: 16px; }
@@ -341,6 +370,8 @@ td strong, td small { display: block; }
   .sectors-heatmap-grid { grid-template-columns: 1fr; }
   .sector-treemap { grid-template-columns: 1fr; }
   .sector-treemap-block { grid-column: span 1 !important; }
+  .heatmap-asof { width: 100%; justify-content: space-between; }
+  .sector-fund-treemap { min-height: 260px; }
   .recommendations-grid { grid-template-columns: 1fr; }
   .universe-tabs-bar { flex-direction: column; align-items: flex-start; gap: 10px; }
 }

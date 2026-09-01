@@ -2,22 +2,9 @@ name: Daily A-Share Quant Pipeline
 
 on:
   schedule:
-    # Runs at 15:35 Beijing Time (07:35 UTC) Monday through Friday
+    # Post-close historical settlement at 15:35 Beijing Time (07:35 UTC), weekdays.
     - cron: '35 7 * * 1-5'
   workflow_dispatch:
-    inputs:
-      refresh_id:
-        description: Worker refresh request ID
-        required: false
-        type: string
-      refresh_mode:
-        description: quick publishes current quotes; history also appends daily K-lines
-        required: false
-        default: quick
-        type: choice
-        options:
-          - quick
-          - history
 
 jobs:
   run-pipeline:
@@ -33,9 +20,6 @@ jobs:
       AWS_DEFAULT_REGION: auto
       PUBLISH_URL: ${{ secrets.PUBLISH_URL }}
       PUBLISH_SECRET: ${{ secrets.PUBLISH_SECRET }}
-      REFRESH_CALLBACK_URL: https://a-share-quant-app.developermantou.workers.dev/api/internal/data-refresh-callback
-      REFRESH_CALLBACK_SECRET: ${{ secrets.REFRESH_CALLBACK_SECRET }}
-      REFRESH_MODE: ${{ inputs.refresh_mode || 'quick' }}
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -63,13 +47,7 @@ jobs:
           unzip -q data/snapshots/historical-current.zip -d data
           test -f data/historical/checkpoints.json
 
-      - name: Mark manual refresh running
-        if: ${{ inputs.refresh_id != '' }}
-        run: |
-          curl --fail-with-body -X POST "$REFRESH_CALLBACK_URL" -H "Content-Type: application/json" -H "X-Refresh-Secret: $REFRESH_CALLBACK_SECRET" -d '{"id":"${{ inputs.refresh_id }}","status":"running"}'
-
-      - name: Append daily K-lines (explicit history mode only)
-        if: ${{ env.REFRESH_MODE == 'history' }}
+      - name: Append post-close daily K-lines
         run: |
           python -m pipeline.jobs.download_history --repair-names
           python -m pipeline.jobs.download_history --incremental --workers 4
@@ -86,8 +64,8 @@ jobs:
         run: |
           python -m pipeline.jobs.publish_screener --input reports/screener-publish.json --timeout 300
 
-      # Classifications change slowly and have a dedicated manual workflow. Keep the daily
-      # manual refresh focused on quote publication; refresh classifications every Monday.
+      # Classifications change slowly and have a dedicated manual workflow. Refresh them
+      # alongside the Monday post-close settlement.
       - name: Fetch and publish industry map
         if: ${{ github.event.schedule == '35 7 * * 1' }}
         continue-on-error: true
@@ -100,35 +78,46 @@ jobs:
           python -m pipeline.jobs.publish_industry_map --input data/realtime/industry-map.json
 
       - name: Fetch and publish stock money flow
-        continue-on-error: true
         run: |
-          python -m pipeline.jobs.fetch_fund_flow --output data/realtime/fund-flow.json
-          python -m pipeline.jobs.publish_fund_flow --input data/realtime/fund-flow.json
+          for attempt in 1 2 3; do
+            if python -m pipeline.jobs.fetch_fund_flow --output data/realtime/fund-flow.json && python -m pipeline.jobs.publish_fund_flow --input data/realtime/fund-flow.json; then
+              break
+            fi
+            if [ "$attempt" = 3 ]; then
+              echo "::warning::Money-flow snapshot could not be refreshed after three attempts."
+            else
+              sleep 20
+            fi
+          done
 
       - name: Fetch and publish valuation snapshot
-        continue-on-error: true
         run: |
-          python -m pipeline.jobs.fetch_valuation --output data/realtime/valuation.json
-          python -m pipeline.jobs.publish_valuation --input data/realtime/valuation.json
+          for attempt in 1 2 3; do
+            if python -m pipeline.jobs.fetch_valuation --output data/realtime/valuation.json && python -m pipeline.jobs.publish_valuation --input data/realtime/valuation.json; then
+              break
+            fi
+            if [ "$attempt" = 3 ]; then
+              echo "::warning::Valuation snapshot could not be refreshed after three attempts."
+            else
+              sleep 20
+            fi
+          done
 
       - name: Fetch and publish financial snapshot
-        continue-on-error: true
         run: |
-          python -m pipeline.jobs.fetch_financials --output data/realtime/financials.json
-          python -m pipeline.jobs.publish_financials
+          for attempt in 1 2 3; do
+            if python -m pipeline.jobs.fetch_financials --output data/realtime/financials.json && python -m pipeline.jobs.publish_financials; then
+              break
+            fi
+            if [ "$attempt" = 3 ]; then
+              echo "::warning::Financial snapshot could not be refreshed after three attempts."
+            else
+              sleep 20
+            fi
+          done
 
       - name: Create and upload refreshed snapshot
         run: |
           python -m pipeline.jobs.snapshot_history --output data/snapshots/historical-current.zip
           python -m pipeline.jobs.snapshot_history --verify data/snapshots/historical-current.zip
           aws s3 cp data/snapshots/historical-current.zip "s3://${R2_BUCKET}/historical-current.zip" --endpoint-url "$R2_ENDPOINT"
-
-      - name: Mark manual refresh complete
-        if: ${{ always() && inputs.refresh_id != '' }}
-        run: |
-          if [ "${{ job.status }}" = "success" ]; then
-            details=$(python -c "import json; p=json.load(open('reports/screener-publish.json')); print(json.dumps({'id':'${{ inputs.refresh_id }}','status':'completed','tradeDate':p['tradeDate'],'rowCount':len(p['stocks'])}))")
-          else
-            details='{"id":"${{ inputs.refresh_id }}","status":"failed","error":"GitHub Actions pipeline failed. Check the workflow run log."}'
-          fi
-          curl --fail-with-body -X POST "$REFRESH_CALLBACK_URL" -H "Content-Type: application/json" -H "X-Refresh-Secret: $REFRESH_CALLBACK_SECRET" -d "$details"

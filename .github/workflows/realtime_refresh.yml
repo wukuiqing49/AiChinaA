@@ -1,0 +1,68 @@
+name: Real-time Market Refresh
+
+on:
+  workflow_dispatch:
+    inputs:
+      refresh_id:
+        description: Worker refresh request ID
+        required: false
+        type: string
+
+jobs:
+  refresh-quotes:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: a-share-realtime-refresh
+      cancel-in-progress: false
+    env:
+      PUBLISH_URL: ${{ secrets.PUBLISH_URL }}
+      PUBLISH_SECRET: ${{ secrets.PUBLISH_SECRET }}
+      REFRESH_CALLBACK_URL: https://a-share-quant-app.developermantou.workers.dev/api/internal/data-refresh-callback
+      REFRESH_CALLBACK_SECRET: ${{ secrets.REFRESH_CALLBACK_SECRET }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install Python Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Mark refresh running
+        if: ${{ inputs.refresh_id != '' }}
+        run: |
+          curl --fail-with-body -X POST "$REFRESH_CALLBACK_URL" -H "Content-Type: application/json" -H "X-Refresh-Secret: $REFRESH_CALLBACK_SECRET" -d '{"id":"${{ inputs.refresh_id }}","status":"running"}'
+
+      - name: Fetch current market universe
+        run: |
+          set -euo pipefail
+          case "$PUBLISH_URL" in
+            */publish-screener) UNIVERSE_URL="${PUBLISH_URL%/publish-screener}/market-universe" ;;
+            *) echo "::error::PUBLISH_URL must end with /publish-screener"; exit 1 ;;
+          esac
+          mkdir -p data/realtime
+          curl --fail-with-body "$UNIVERSE_URL" -H "X-Publish-Secret: $PUBLISH_SECRET" -o data/realtime/market-universe.json
+
+      - name: Fetch real-time market snapshot
+        run: |
+          python -m pipeline.jobs.fetch_realtime_quotes --universe data/realtime/market-universe.json --output data/realtime/tencent-quotes.json
+
+      - name: Publish real-time market snapshot
+        run: |
+          python -m pipeline.jobs.publish_realtime_quotes --input data/realtime/tencent-quotes.json --timeout 180
+
+      - name: Mark refresh complete
+        if: ${{ always() && inputs.refresh_id != '' }}
+        run: |
+          if [ "${{ job.status }}" = "success" ]; then
+            details=$(python -c "import json; p=json.load(open('data/realtime/tencent-quotes.json')); q=list(p['quotes'].values()); print(json.dumps({'id':'${{ inputs.refresh_id }}','status':'completed','tradeDate':max(x['quoteDate'] for x in q),'rowCount':len(q)}))")
+          else
+            details='{"id":"${{ inputs.refresh_id }}","status":"failed","error":"GitHub Actions real-time refresh failed. Check the workflow run log."}'
+          fi
+          curl --fail-with-body -X POST "$REFRESH_CALLBACK_URL" -H "Content-Type: application/json" -H "X-Refresh-Secret: $REFRESH_CALLBACK_SECRET" -d "$details"

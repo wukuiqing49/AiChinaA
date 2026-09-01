@@ -16,6 +16,13 @@ export interface DataRefresh {
   error: string | null;
 }
 
+export interface RuleDataCapabilities {
+  industry: boolean;
+  moneyFlow: boolean;
+  valuation: boolean;
+  financial: boolean;
+}
+
 export interface WatchlistItem {
   code: string;
   name: string;
@@ -118,6 +125,26 @@ export interface RuleScreenerRequest {
   pageSize?: number;
 }
 
+export interface SectorHeatmapItem {
+  industry: string;
+  stockCount: number;
+  tradeDate: string | null;
+  moneyFlowDate: string | null;
+  turnoverAmount: number;
+  mainNetInflow: number;
+  moneyFlowCount: number;
+  mainNetInflowRatio: number | null;
+  pctChange: number | null;
+}
+
+export interface SavedStrategy {
+  id: string;
+  name: string;
+  rule: RuleScreenerRequest;
+  createdAt: string;
+  updatedAt: string;
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(path, { credentials: "include", ...options });
   if (!response.ok) {
@@ -137,8 +164,9 @@ export const api = {
     return request<{ items: ScreenerItem[]; total: number; page: number; pageSize: number; asOf: string | null }>(`/api/screener?${params}`);
   },
   marketIndices: () => request<{ items: MarketIndexItem[] }>("/api/market-indices"),
-  marketHeatmap: () => request<{ items: ScreenerItem[]; classifiedCount?: number; totalCount?: number; asOf?: string | null }>("/api/market-heatmap"),
+  marketHeatmap: () => request<{ items: SectorHeatmapItem[]; asOf: string | null; moneyFlowAsOf: string | null; moneyFlowAvailable: boolean }>("/api/market-heatmap"),
   top10: () => request<{ items: ScreenerItem[] }>("/api/recommendations/top10"),
+  ruleDataCapabilities: () => request<RuleDataCapabilities>("/api/rule-data-capabilities"),
   ruleScreener: (rule: RuleScreenerRequest) => request<{ items: ScreenerItem[]; total: number; page: number; pageSize: number }>("/api/rule-screener", {
     method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(rule),
   }),
@@ -157,5 +185,10 @@ export const api = {
     body: JSON.stringify({ code }),
   }),
   removeWatchlist: (code: string) => request<void>(`/api/watchlist/${code}`, { method: "DELETE" }),
+  savedStrategies: () => request<{ items: SavedStrategy[] }>("/api/saved-strategies"),
+  saveStrategy: (name: string, rule: RuleScreenerRequest) => request<{ item: SavedStrategy }>("/api/saved-strategies", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name, rule }),
+  }),
+  removeStrategy: (id: string) => request<void>(`/api/saved-strategies/${id}`, { method: "DELETE" }),
   recommendations: () => request<{ items: Recommendation[] }>("/api/recommendations/tracking"),
 };

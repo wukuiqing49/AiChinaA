@@ -47,13 +47,19 @@ def score_technical_factors(factors: pd.DataFrame) -> pd.DataFrame:
         output[score_column] = grouped.transform(
             lambda values: _percentile_score(values, higher_is_better)
         )
-    output["score_volume_price"] = _target_score(factors["volume_ratio_20"], target=1.5, tolerance=0.7)
+    output["score_volume_price"] = _target_score(
+        factors["volume_ratio_20"], target=1.5, tolerance=0.7
+    )
     output["score_risk"] = _target_score(factors["volatility_20"], target=0.32, tolerance=0.22)
 
     output["score_valuation"] = None
     output["score_quality"] = None
     output["score_growth"] = None
-    technical_scores = list(dimensions)
+    technical_scores = [
+        *dimensions,
+        "score_volume_price",
+        "score_risk",
+    ]
     output["score_total"] = output[technical_scores].mean(axis=1, skipna=True)
     output["data_completeness"] = (
         output[technical_scores].notna().sum(axis=1) / len(technical_scores)

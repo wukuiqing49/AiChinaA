@@ -34,4 +34,7 @@ def test_technical_factors_and_scores_preserve_unavailable_dimensions() -> None:
     assert scores["score_quality"].isna().all()
     assert scores["score_growth"].isna().all()
     assert last["data_completeness"] == 1.0
+    assert last["score_total"] == pytest.approx(
+        last[["score_trend", "score_momentum", "score_volume_price", "score_risk"]].mean()
+    )
     assert 0 <= last["score_total"] <= 100

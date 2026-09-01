@@ -35,6 +35,34 @@ def _targets(data_dir: Path) -> list[tuple[str, str]]:
     return targets
 
 
+def _targets_from_universe(universe_file: Path) -> list[tuple[str, str]]:
+    """Load the lightweight instrument list returned by the Worker."""
+    payload = json.loads(universe_file.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict) or not isinstance(payload.get("targets"), list):
+        raise ValueError("market universe must contain a targets array")
+    targets: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in payload["targets"]:
+        if not isinstance(item, dict):
+            continue
+        code = item.get("code")
+        instrument_type = item.get("instrumentType")
+        if (
+            not isinstance(code, str)
+            or not isinstance(instrument_type, str)
+            or instrument_type not in {"stock", "etf", "index"}
+            or not code
+        ):
+            continue
+        target = (code, instrument_type)
+        if target not in seen:
+            seen.add(target)
+            targets.append(target)
+    if not targets:
+        raise ValueError("market universe contains no supported targets")
+    return targets
+
+
 def parse_tencent_response(
     body: str, target_by_symbol: dict[str, tuple[str, str, str]]
 ) -> dict[str, dict[str, object]]:
@@ -152,10 +180,12 @@ def _fetch_sina_batch(
     raise last_error
 
 
-def fetch_realtime_quotes(data_dir: Path, output: Path) -> dict[str, object]:
+def fetch_realtime_quotes(
+    data_dir: Path, output: Path, *, universe_file: Path | None = None
+) -> dict[str, object]:
     quotes: dict[str, dict[str, object]] = {}
     failed_batches = 0
-    targets = _targets(data_dir)
+    targets = _targets_from_universe(universe_file) if universe_file else _targets(data_dir)
     for start in range(0, len(targets), 50):
         batch = targets[start : start + 50]
         try:
@@ -198,9 +228,14 @@ def fetch_realtime_quotes(data_dir: Path, output: Path) -> dict[str, object]:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Fetch a Tencent real-time market snapshot.")
     parser.add_argument("--data-dir", type=Path, default=Path("data/historical"))
+    parser.add_argument(
+        "--universe",
+        type=Path,
+        help="lightweight Worker market-universe JSON; avoids needing historical files",
+    )
     parser.add_argument("--output", type=Path, default=Path("data/realtime/tencent-quotes.json"))
     args = parser.parse_args()
-    result = fetch_realtime_quotes(args.data_dir, args.output)
+    result = fetch_realtime_quotes(args.data_dir, args.output, universe_file=args.universe)
     print(result)
     return 1 if result["saved"] == 0 else 0
 
