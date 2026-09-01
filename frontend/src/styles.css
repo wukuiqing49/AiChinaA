@@ -69,6 +69,8 @@ h4 { font-size: 13px; margin-bottom: 10px; color: var(--text-sub); text-transfor
 .market-index-card .index-date { margin-top: 2px; }
 .market-index-card .index-date.stale { color: var(--negative); font-weight: 600; }
 .data-refresh-status { margin: 8px 0; color: var(--text-sub); font-size: 13px; }
+.data-freshness { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 14px; color: var(--text-sub); font-size: 12px; }
+.data-freshness span { border: 1px solid var(--border); padding: 4px 7px; border-radius: 3px; background: var(--panel); }
 .market-breadth-banner {
   display: grid;
   grid-template-columns: repeat(4, 1fr);

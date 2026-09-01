@@ -2,8 +2,6 @@ name: Sync stock screener data
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "35 9 * * 1-5"
 
 concurrency:
   group: screener-sync-production

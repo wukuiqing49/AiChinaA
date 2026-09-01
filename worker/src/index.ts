@@ -461,6 +461,28 @@ app.post("/api/internal/data-refresh-callback", async (context) => {
   return context.json({ id, status });
 });
 
+app.get("/api/data-status", async (context) => {
+  const status = await context.env.DB.prepare(
+    `SELECT
+       (SELECT MAX(quote_updated_at) FROM stock_latest) AS quote_updated_at,
+       (SELECT MAX(updated_at) FROM industry_fund_flow_latest) AS industry_fund_flow_updated_at,
+       (SELECT MAX(updated_at) FROM stock_money_flow_latest) AS stock_money_flow_updated_at,
+       (SELECT MAX(updated_at) FROM stock_valuation_latest) AS valuation_updated_at,
+       (SELECT MAX(updated_at) FROM stock_financial_latest) AS financial_updated_at,
+       (SELECT MAX(completed_at) FROM sync_runs WHERE status = 'completed' AND run_kind = 'full_market') AS screener_updated_at,
+       (SELECT MAX(trade_date) FROM stock_screen_latest) AS screener_trade_date`,
+  ).first<DataStatusRow>();
+  return context.json({
+    quoteUpdatedAt: status?.quote_updated_at ?? null,
+    industryFundFlowUpdatedAt: status?.industry_fund_flow_updated_at ?? null,
+    stockMoneyFlowUpdatedAt: status?.stock_money_flow_updated_at ?? null,
+    valuationUpdatedAt: status?.valuation_updated_at ?? null,
+    financialUpdatedAt: status?.financial_updated_at ?? null,
+    screenerUpdatedAt: status?.screener_updated_at ?? null,
+    screenerTradeDate: status?.screener_trade_date ?? null,
+  });
+});
+
 app.get("/api/internal/market-universe", async (context) => {
   if (!context.env.PUBLISH_SECRET || !secretsEqual(context.req.header("X-Publish-Secret") ?? "", context.env.PUBLISH_SECRET)) {
     return context.json({ error: "Invalid publish credentials." }, 401);
@@ -1074,6 +1096,16 @@ function toScreenerItem(row: ScreenerRow) {
     volumeRatio20: row.volume_ratio_20,
     volatility20: row.volatility_20,
   };
+}
+
+interface DataStatusRow {
+  quote_updated_at: string | null;
+  industry_fund_flow_updated_at: string | null;
+  stock_money_flow_updated_at: string | null;
+  valuation_updated_at: string | null;
+  financial_updated_at: string | null;
+  screener_updated_at: string | null;
+  screener_trade_date: string | null;
 }
 
 function toSectorHeatmapItem(row: SectorHeatmapRow) {

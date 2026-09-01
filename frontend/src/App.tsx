@@ -1,7 +1,7 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { hierarchy, treemap } from "d3-hierarchy";
 
-import { api, DataRefresh, MarketIndexItem, Recommendation, RuleCondition, RuleDataCapabilities, RuleScreenerRequest, SavedStrategy, ScreenerItem, ScreenerQuery, SectorHeatmapItem, User, WatchlistItem } from "./api";
+import { api, DataRefresh, DataStatus, MarketIndexItem, Recommendation, RuleCondition, RuleDataCapabilities, RuleScreenerRequest, SavedStrategy, ScreenerItem, ScreenerQuery, SectorHeatmapItem, User, WatchlistItem } from "./api";
 import "./styles.css";
 
 type FilterState = Omit<ScreenerQuery, "page" | "pageSize">;
@@ -195,6 +195,7 @@ export default function App() {
   const [marketIndices, setMarketIndices] = useState<MarketIndexItem[]>([]);
   const [refresh, setRefresh] = useState<DataRefresh | null>(null);
   const [refreshError, setRefreshError] = useState<string | null>(null);
+  const [dataStatus, setDataStatus] = useState<DataStatus | null>(null);
   const [filters, setFilters] = useState<FilterState>(emptyFilters);
   const [items, setItems] = useState<ScreenerItem[]>([]);
   const [marketHeatmap, setMarketHeatmap] = useState<{
@@ -311,6 +312,14 @@ export default function App() {
     }
   }, []);
 
+  const loadDataStatus = useCallback(async () => {
+    try {
+      setDataStatus(await api.dataStatus());
+    } catch {
+      setDataStatus(null);
+    }
+  }, []);
+
   const loadTop10 = useCallback(async () => {
     try {
       const result = await api.top10();
@@ -328,6 +337,7 @@ export default function App() {
     void loadRecommendations();
     void loadMarketIndices();
     void loadRefresh();
+    void loadDataStatus();
 
     const hash = window.location.hash;
     if (hash.startsWith("#stock=")) {
@@ -341,39 +351,7 @@ export default function App() {
       }
     }
 
-    const timer = setInterval(() => {
-      void loadScreen(filters, page);
-      void loadMarketHeatmap();
-      void loadTop10();
-      void loadRecommendations();
-      void loadMarketIndices();
-      void loadRefresh();
-    }, 120000);
-
-    return () => clearInterval(timer);
-  }, [filters, loadMarketHeatmap, loadMarketIndices, loadRecommendations, loadRefresh, loadScreen, loadTop10, loadUser, page]);
-
-  useEffect(() => {
-    const code = selectedStock?.code;
-    if (!code) return;
-    let active = true;
-    const refreshDetail = async () => {
-      try {
-        const result = await api.screener({ code, page: 1, pageSize: 1 });
-        const latest = result.items[0];
-        if (active && latest) {
-          setSelectedStock((current) => (current?.code === code ? latest : current));
-        }
-      } catch {
-        // Keep the last known detail data if a polling request fails.
-      }
-    };
-    const timer = setInterval(() => void refreshDetail(), 30000);
-    return () => {
-      active = false;
-      clearInterval(timer);
-    };
-  }, [selectedStock?.code]);
+  }, [loadDataStatus, loadMarketHeatmap, loadMarketIndices, loadRecommendations, loadRefresh, loadScreen, loadTop10, loadUser]);
 
   function handleSelectStock(stock: ScreenerItem, fullScreen = false) {
     setSelectedStock(stock);
@@ -521,6 +499,7 @@ export default function App() {
         {error && <p className="error">{error}</p>}
         {refresh && <p className={refresh.status === "failed" ? "error" : "data-refresh-status"}>数据更新：{refresh.status}{refresh.tradeDate ? `，数据日期 ${refresh.tradeDate}` : ""}{refresh.error ? `，${refresh.error}` : ""}</p>}
         {refreshError && <p className="error">{refreshError}</p>}
+        {dataStatus && <DataFreshnessBar status={dataStatus} />}
 
         <MarketIndexOverview items={marketIndices} />
 
@@ -1146,6 +1125,22 @@ function formatFundAmount(value: number): string {
   if (absolute >= 1e8) return `${(value / 1e8).toFixed(1)}亿`;
   if (absolute >= 1e4) return `${(value / 1e4).toFixed(0)}万`;
   return value.toFixed(0);
+}
+
+function DataFreshnessBar({ status }: { status: DataStatus }) {
+  const formatTime = (value: string | null) => value
+    ? new Date(value).toLocaleString("zh-CN", { hour12: false })
+    : "未同步";
+  return (
+    <div className="data-freshness" aria-label="数据更新时间">
+      <span>行情 {formatTime(status.quoteUpdatedAt)}</span>
+      <span>板块资金 {formatTime(status.industryFundFlowUpdatedAt)}</span>
+      <span>日结因子 {status.screenerTradeDate ?? "未同步"}</span>
+      <span>个股资金 {formatTime(status.stockMoneyFlowUpdatedAt)}</span>
+      <span>估值 {formatTime(status.valuationUpdatedAt)}</span>
+      <span>财务 {formatTime(status.financialUpdatedAt)}</span>
+    </div>
+  );
 }
 
 function fundFlowColor(ratio: number | null): string {

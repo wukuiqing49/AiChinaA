@@ -16,6 +16,16 @@ export interface DataRefresh {
   error: string | null;
 }
 
+export interface DataStatus {
+  quoteUpdatedAt: string | null;
+  industryFundFlowUpdatedAt: string | null;
+  stockMoneyFlowUpdatedAt: string | null;
+  valuationUpdatedAt: string | null;
+  financialUpdatedAt: string | null;
+  screenerUpdatedAt: string | null;
+  screenerTradeDate: string | null;
+}
+
 export interface RuleDataCapabilities {
   industry: boolean;
   moneyFlow: boolean;
@@ -170,6 +180,7 @@ export const api = {
     method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(rule),
   }),
   dataRefresh: () => request<{ refresh: DataRefresh | null }>("/api/data-refresh"),
+  dataStatus: () => request<DataStatus>("/api/data-status"),
   requestDataRefresh: () => request<{ refresh: DataRefresh }>("/api/data-refresh", { method: "POST" }),
   login: (username: string, password: string) => request<{ user: User }>("/api/auth/login", {
     method: "POST",
