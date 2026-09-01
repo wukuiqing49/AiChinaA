@@ -1131,14 +1131,26 @@ function DataFreshnessBar({ status }: { status: DataStatus }) {
   const formatTime = (value: string | null) => value
     ? new Date(value).toLocaleString("zh-CN", { hour12: false })
     : "未同步";
+  const freshnessClass = (value: string | null, isLive = false) => {
+    if (!value) return "missing";
+    if (isLive && Date.now() - new Date(value).getTime() > 15 * 60 * 1000) return "stale";
+    return isLive ? "fresh" : "settled";
+  };
+  const items = [
+    { label: "行情", value: status.quoteUpdatedAt, live: true },
+    { label: "板块资金", value: status.industryFundFlowUpdatedAt, live: true },
+    { label: "日结因子", value: status.screenerTradeDate, live: false, dateOnly: true },
+    { label: "个股资金", value: status.stockMoneyFlowUpdatedAt, live: false },
+    { label: "估值", value: status.valuationUpdatedAt, live: false },
+    { label: "财务", value: status.financialUpdatedAt, live: false },
+  ];
   return (
     <div className="data-freshness" aria-label="数据更新时间">
-      <span>行情 {formatTime(status.quoteUpdatedAt)}</span>
-      <span>板块资金 {formatTime(status.industryFundFlowUpdatedAt)}</span>
-      <span>日结因子 {status.screenerTradeDate ?? "未同步"}</span>
-      <span>个股资金 {formatTime(status.stockMoneyFlowUpdatedAt)}</span>
-      <span>估值 {formatTime(status.valuationUpdatedAt)}</span>
-      <span>财务 {formatTime(status.financialUpdatedAt)}</span>
+      {items.map((item) => (
+        <span key={item.label} className={freshnessClass(item.value, item.live)}>
+          {item.label} {item.dateOnly ? item.value ?? "未同步" : formatTime(item.value)}
+        </span>
+      ))}
     </div>
   );
 }
