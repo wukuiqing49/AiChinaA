@@ -2,7 +2,11 @@ import json
 
 import pytest
 
-from pipeline.jobs.publish_screener import load_payload
+from pipeline.jobs.publish_screener import DEFAULT_PUBLISH_TIMEOUT_SECONDS, load_payload
+
+
+def test_default_publish_timeout_allows_full_market_d1_publish() -> None:
+    assert DEFAULT_PUBLISH_TIMEOUT_SECONDS == 300
 
 
 def test_load_payload_requires_all_screen_fields(tmp_path):

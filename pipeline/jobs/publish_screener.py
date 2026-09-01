@@ -30,6 +30,7 @@ REQUIRED_STOCK_FIELDS = {
     "volumeRatio20",
     "volatility20",
 }
+DEFAULT_PUBLISH_TIMEOUT_SECONDS = 300
 
 
 def load_payload(path: Path) -> dict[str, object]:
@@ -51,7 +52,11 @@ def load_payload(path: Path) -> dict[str, object]:
 
 
 def publish_payload(
-    payload: dict[str, object], *, url: str, secret: str, timeout: int = 60
+    payload: dict[str, object],
+    *,
+    url: str,
+    secret: str,
+    timeout: int = DEFAULT_PUBLISH_TIMEOUT_SECONDS,
 ) -> dict[str, object]:
     if not url or not secret:
         raise ValueError("publish URL and secret are required")
@@ -90,6 +95,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--url", default=os.environ.get("PUBLISH_URL", ""))
     parser.add_argument("--secret", default=os.environ.get("PUBLISH_SECRET", ""))
     parser.add_argument(
+        "--timeout",
+        type=int,
+        default=int(os.environ.get("PUBLISH_TIMEOUT_SECONDS", DEFAULT_PUBLISH_TIMEOUT_SECONDS)),
+    )
+    parser.add_argument(
         "--run-kind",
         choices=("full_market", "supplemental_st", "single_stock"),
         default="full_market",
@@ -99,9 +109,11 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    if args.timeout < 1:
+        raise ValueError("publish timeout must be at least one second")
     payload = load_payload(args.input)
     payload["runKind"] = args.run_kind
-    result = publish_payload(payload, url=args.url, secret=args.secret)
+    result = publish_payload(payload, url=args.url, secret=args.secret, timeout=args.timeout)
     print(json.dumps(result, ensure_ascii=False))
     return 0
 
