@@ -64,7 +64,8 @@ jobs:
               break
             fi
             if [ "$attempt" = 3 ]; then
-              echo "::warning::Live industry fund-flow snapshot could not be refreshed after three attempts."
+              echo "::error::Live industry fund-flow snapshot could not be refreshed after three attempts."
+              exit 1
             else
               sleep 20
             fi
