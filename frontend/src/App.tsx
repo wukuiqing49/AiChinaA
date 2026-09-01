@@ -728,6 +728,10 @@ export default function App() {
                     quoteSource: null,
                     close: w.latestClose,
                     score: w.scoreTotal,
+                    scoreTrend: null,
+                    scoreMomentum: null,
+                    scoreVolumePrice: null,
+                    scoreRisk: null,
                     dataCompleteness: 1,
                     market: null,
                     industry: null,
@@ -1374,6 +1378,10 @@ function RecommendationsView({
           quoteSource: null,
           close: r.latestClose,
           score: r.score,
+          scoreTrend: null,
+          scoreMomentum: null,
+          scoreVolumePrice: null,
+          scoreRisk: null,
           dataCompleteness: 1,
           market: r.code.startsWith("6") ? "SH" : "SZ",
           industry: "推荐标的",
@@ -1976,6 +1984,36 @@ function StockDetailPage({
             </div>
 
             <div className="factors-table-wrap">
+              <h4>技术评分拆解</h4>
+              <div className="factor-grid-full">
+                <div className="factor-pill">
+                  <span>趋势评分</span>
+                  <strong className="score-val">{formatNumber(stock.scoreTrend, 1)}</strong>
+                </div>
+                <div className="factor-pill">
+                  <span>动量评分</span>
+                  <strong className="score-val">{formatNumber(stock.scoreMomentum, 1)}</strong>
+                </div>
+                <div className="factor-pill">
+                  <span>量价评分</span>
+                  <strong className="score-val">{formatNumber(stock.scoreVolumePrice, 1)}</strong>
+                </div>
+                <div className="factor-pill">
+                  <span>风险评分</span>
+                  <strong className="score-val">{formatNumber(stock.scoreRisk, 1)}</strong>
+                </div>
+                <div className="factor-pill">
+                  <span>技术综合评分</span>
+                  <strong className="score-val">{formatNumber(stock.score, 1)}</strong>
+                </div>
+                <div className="factor-pill">
+                  <span>评分数据完整度</span>
+                  <strong>{stock.dataCompleteness ? `${(stock.dataCompleteness * 100).toFixed(0)}%` : "-"}</strong>
+                </div>
+              </div>
+            </div>
+
+            <div className="factors-table-wrap">
               <h4>技术指标清单</h4>
               <div className="factor-grid-full">
                 <div className="factor-pill">
@@ -2001,14 +2039,6 @@ function StockDetailPage({
                 <div className="factor-pill">
                   <span>20日年化波动率</span>
                   <strong>{formatNumber(stock.volatility20)}</strong>
-                </div>
-                <div className="factor-pill">
-                  <span>横截面综合得分</span>
-                  <strong className="score-val">{formatNumber(stock.score, 1)}</strong>
-                </div>
-                <div className="factor-pill">
-                  <span>数据有效性完整度</span>
-                  <strong>{stock.dataCompleteness ? `${(stock.dataCompleteness * 100).toFixed(0)}%` : "-"}</strong>
                 </div>
               </div>
             </div>

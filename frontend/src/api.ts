@@ -71,6 +71,10 @@ export interface ScreenerItem {
   quoteSource: "tencent" | "sina" | null;
   close: number | null;
   score: number | null;
+  scoreTrend: number | null;
+  scoreMomentum: number | null;
+  scoreVolumePrice: number | null;
+  scoreRisk: number | null;
   dataCompleteness: number | null;
   market: string | null;
   industry: string | null;

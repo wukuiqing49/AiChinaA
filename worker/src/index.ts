@@ -58,6 +58,10 @@ const screenerPublishSchema = z.object({
     quoteSource: z.enum(["tencent", "sina"]).nullable(),
     close: z.number().positive().nullable(),
     scoreTotal: z.number().min(0).max(100).nullable(),
+    scoreTrend: z.number().min(0).max(100).nullable().default(null),
+    scoreMomentum: z.number().min(0).max(100).nullable().default(null),
+    scoreVolumePrice: z.number().min(0).max(100).nullable().default(null),
+    scoreRisk: z.number().min(0).max(100).nullable().default(null),
     dataCompleteness: z.number().min(0).max(1).nullable(),
     market: z.string().max(8).nullable(),
     industry: z.string().max(80).nullable(),
@@ -187,7 +191,7 @@ app.get("/api/screener", async (context) => {
   const [rows, count, asOf] = await Promise.all([
     context.env.DB.prepare(
       `SELECT s.code, s.name, s.instrument_type, s.is_st, s.trade_date, s.quote_date, s.quote_time, s.quote_source,
-              s.close, s.score_total, s.data_completeness,
+              s.close, s.score_total, s.data_completeness, d.score_trend, d.score_momentum, d.score_volume_price, d.score_risk,
               d.market, COALESCE(i.industry, d.industry) AS industry, COALESCE(s.quote_pct_change, d.pct_change) AS pct_change, d.turnover_rate, d.ret_5d, d.ret_20d,
               d.ret_60d, d.ma20_slope, d.volume_ratio_20, d.volatility_20
          ${baseSql}
@@ -327,7 +331,7 @@ app.get("/api/market-heatmap", async (context) => {
 app.get("/api/recommendations/top10", async (context) => {
   const rows = await context.env.DB.prepare(
     `SELECT s.code, s.name, s.instrument_type, s.is_st, s.trade_date, s.quote_date, s.quote_time, s.quote_source,
-            s.close, s.score_total, s.data_completeness,
+            s.close, s.score_total, s.data_completeness, d.score_trend, d.score_momentum, d.score_volume_price, d.score_risk,
             d.market, COALESCE(i.industry, d.industry) AS industry, COALESCE(s.quote_pct_change, d.pct_change) AS pct_change, d.turnover_rate, d.ret_5d, d.ret_20d,
             d.ret_60d, d.ma20_slope, d.volume_ratio_20, d.volatility_20
        FROM stock_latest s
@@ -392,7 +396,7 @@ app.post("/api/rule-screener", async (context) => {
   const [rows, count] = await Promise.all([
     context.env.DB.prepare(
       `SELECT s.code, s.name, s.instrument_type, s.is_st, s.trade_date, s.quote_date, s.quote_time, s.quote_source,
-              s.close, s.score_total, s.data_completeness, d.market, COALESCE(i.industry, d.industry) AS industry, COALESCE(s.quote_pct_change, d.pct_change) AS pct_change, d.turnover_rate,
+              s.close, s.score_total, s.data_completeness, d.score_trend, d.score_momentum, d.score_volume_price, d.score_risk, d.market, COALESCE(i.industry, d.industry) AS industry, COALESCE(s.quote_pct_change, d.pct_change) AS pct_change, d.turnover_rate,
               d.ret_5d, d.ret_20d, d.ret_60d, d.ma20_slope, d.volume_ratio_20, d.volatility_20 ${baseSql}
        ORDER BY ${orderColumn} ${query.sortDirection === "asc" ? "ASC" : "DESC"}, s.code ASC LIMIT ? OFFSET ?`,
     ).bind(...bindings, query.pageSize, offset).all<ScreenerRow>(),
@@ -540,8 +544,8 @@ app.post("/api/internal/publish-screener", async (context) => {
            ret_60d, ma20_slope, volume_ratio_20, volatility_20, volume_ratio_5, amount,
            amount_ratio_5, amount_ratio_20, rsi_14, ret_120d, ret_250d, distance_high_20,
            distance_high_60, distance_high_250, distance_low_250, price_percentile_250,
-           volatility_60, max_drawdown_60, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           volatility_60, max_drawdown_60, score_trend, score_momentum, score_volume_price, score_risk, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(code) DO UPDATE SET trade_date = excluded.trade_date, market = excluded.market,
            industry = excluded.industry, pct_change = excluded.pct_change, turnover_rate = excluded.turnover_rate,
            ret_5d = excluded.ret_5d, ret_20d = excluded.ret_20d, ret_60d = excluded.ret_60d,
@@ -552,8 +556,10 @@ app.post("/api/internal/publish-screener", async (context) => {
            distance_high_20 = excluded.distance_high_20, distance_high_60 = excluded.distance_high_60,
            distance_high_250 = excluded.distance_high_250, distance_low_250 = excluded.distance_low_250,
            price_percentile_250 = excluded.price_percentile_250, volatility_60 = excluded.volatility_60,
-           max_drawdown_60 = excluded.max_drawdown_60, updated_at = excluded.updated_at`,
-      ).bind(stock.code, stock.tradeDate, stock.market, stock.industry, stock.pctChange, stock.turnoverRate, stock.ret5d, stock.ret20d, stock.ret60d, stock.ma20Slope, stock.volumeRatio20, stock.volatility20, stock.volumeRatio5, stock.amount, stock.amountRatio5, stock.amountRatio20, stock.rsi14, stock.ret120d, stock.ret250d, stock.distanceHigh20, stock.distanceHigh60, stock.distanceHigh250, stock.distanceLow250, stock.pricePercentile250, stock.volatility60, stock.maxDrawdown60, startedAt),
+           max_drawdown_60 = excluded.max_drawdown_60, score_trend = excluded.score_trend,
+           score_momentum = excluded.score_momentum, score_volume_price = excluded.score_volume_price,
+           score_risk = excluded.score_risk, updated_at = excluded.updated_at`,
+      ).bind(stock.code, stock.tradeDate, stock.market, stock.industry, stock.pctChange, stock.turnoverRate, stock.ret5d, stock.ret20d, stock.ret60d, stock.ma20Slope, stock.volumeRatio20, stock.volatility20, stock.volumeRatio5, stock.amount, stock.amountRatio5, stock.amountRatio20, stock.rsi14, stock.ret120d, stock.ret250d, stock.distanceHigh20, stock.distanceHigh60, stock.distanceHigh250, stock.distanceLow250, stock.pricePercentile250, stock.volatility60, stock.maxDrawdown60, stock.scoreTrend, stock.scoreMomentum, stock.scoreVolumePrice, stock.scoreRisk, startedAt),
       ]),
       ...indices.map((index) => context.env.DB.prepare(
         `INSERT INTO market_index_latest (
@@ -993,6 +999,10 @@ interface ScreenerRow {
   quote_source: "tencent" | "sina" | null;
   close: number | null;
   score_total: number | null;
+  score_trend: number | null;
+  score_momentum: number | null;
+  score_volume_price: number | null;
+  score_risk: number | null;
   data_completeness: number | null;
   total_market_cap: number | null;
   float_market_cap: number | null;
@@ -1082,6 +1092,10 @@ function toScreenerItem(row: ScreenerRow) {
     quoteSource: row.quote_source,
     close: row.close,
     score: row.score_total,
+    scoreTrend: row.score_trend,
+    scoreMomentum: row.score_momentum,
+    scoreVolumePrice: row.score_volume_price,
+    scoreRisk: row.score_risk,
     dataCompleteness: row.data_completeness,
     totalMarketCap: row.total_market_cap,
     floatMarketCap: row.float_market_cap,

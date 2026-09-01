@@ -254,6 +254,10 @@ def build_payload(
                 else item.get("close")
             ),
             "scoreTotal": item.get("score_total"),
+            "scoreTrend": item.get("score_trend"),
+            "scoreMomentum": item.get("score_momentum"),
+            "scoreVolumePrice": item.get("score_volume_price"),
+            "scoreRisk": item.get("score_risk"),
             "dataCompleteness": item.get("data_completeness"),
             "market": _market(code),
             "industry": "",
