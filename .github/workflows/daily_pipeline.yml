@@ -86,10 +86,10 @@ jobs:
         run: |
           python -m pipeline.jobs.publish_screener --input reports/screener-publish.json --timeout 300
 
-      # Classifications change slowly but require many source requests. Refresh weekly on
-      # schedule, and on manually requested runs so a newly deployed database can be seeded.
+      # Classifications change slowly and have a dedicated manual workflow. Keep the daily
+      # manual refresh focused on quote publication; refresh classifications every Monday.
       - name: Fetch and publish industry map
-        if: ${{ github.event_name == 'workflow_dispatch' || github.event.schedule == '35 7 * * 1' }}
+        if: ${{ github.event.schedule == '35 7 * * 1' }}
         continue-on-error: true
         run: |
           for attempt in 1 2 3; do
