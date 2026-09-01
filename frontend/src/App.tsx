@@ -1172,7 +1172,7 @@ function SectorFundTreemap({
     const root = hierarchy<TreeNode>({ children: items })
       .sum((node) => "inflowAmount" in node ? Math.max(node.inflowAmount + node.outflowAmount, 1) : 0)
       .sort((left, right) => (right.value ?? 0) - (left.value ?? 0));
-    return treemap<TreeNode>().size([1000, 560]).paddingInner(4).paddingOuter(2).round(true)(root).leaves()
+    return treemap<TreeNode>().size([1000, 720]).paddingInner(3).paddingOuter(2).round(true)(root).leaves()
       .map((leaf) => ({ ...leaf, sector: leaf.data as SectorHeatmapItem }));
   }, [items]);
 
@@ -1193,17 +1193,18 @@ function SectorFundTreemap({
       </div>
       {!moneyFlowAvailable && <p className="heatmap-data-warning">暂无当天板块资金流数据，请在首页执行刷新。</p>}
       {!leaves.length ? <div className="empty">暂无可用的当天板块资金流数据。</div> : (
-        <svg className="sector-fund-treemap" viewBox="0 0 1000 560" role="img" aria-label="按资金活动面积展示的板块资金热力图">
+        <svg className="sector-fund-treemap" viewBox="0 0 1000 720" role="img" aria-label="按资金活动面积展示的板块资金热力图">
           {leaves.map((leaf) => {
             const { sector } = leaf;
             const width = leaf.x1 - leaf.x0;
             const height = leaf.y1 - leaf.y0;
-            const showTitle = width >= 72 && height >= 30;
+            const showTitle = width >= 28 && height >= 18;
             const showFlow = width >= 130 && height >= 58;
             const showMeta = width >= 250 && height >= 78;
-            const titleLength = Math.max(3, Math.floor((width - 20) / 15));
+            const titleFontSize = Math.max(7, Math.min(18, Math.floor(Math.min(height - 6, (width - 8) / 2.2))));
+            const titleLength = Math.max(2, Math.floor((width - 8) / titleFontSize));
             const title = sector.industry.length > titleLength
-              ? `${sector.industry.slice(0, titleLength - 1)}...`
+              ? titleLength >= 4 ? `${sector.industry.slice(0, titleLength - 1)}...` : sector.industry.slice(0, titleLength)
               : sector.industry;
             const activityAmount = sector.inflowAmount + sector.outflowAmount;
             const flowRatio = activityAmount > 0 ? formatRatioPercent(sector.netInflow / activityAmount) : "-";
@@ -1224,7 +1225,7 @@ function SectorFundTreemap({
               >
                 <title>{`${sector.industry}\n流入 ${formatFundAmount(sector.inflowAmount)}\n流出 ${formatFundAmount(sector.outflowAmount)}\n净流入 ${formatFundAmount(sector.netInflow)}\n净流入率 ${flowRatio}\n公司 ${sector.companyCount ?? "-"} 家`}</title>
                 <rect width={width} height={height} fill={fundFlowColor(activityAmount > 0 ? sector.netInflow / activityAmount : null)} rx="2" />
-                {showTitle && <text className="sector-fund-name" x="10" y="24">{title}</text>}
+                {showTitle && <text className="sector-fund-name" x="4" y={titleFontSize + 4} style={{ fontSize: titleFontSize }}>{title}</text>}
                 {showFlow && <>
                   <text className="sector-fund-value" x="10" y="47">{flowRatio}</text>
                 </>}

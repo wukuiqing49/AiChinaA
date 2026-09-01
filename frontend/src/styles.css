@@ -180,7 +180,7 @@ td strong, td small { display: block; }
 .heatmap-asof { display: flex; gap: 12px; color: var(--text-sub); font-size: 12px; white-space: nowrap; }
 .legend-down-swatch { background: #16a34a; }
 .heatmap-data-warning { margin: 0; color: #a16207; font-size: 13px; }
-.sector-fund-treemap { width: 100%; min-height: 340px; aspect-ratio: 25 / 14; display: block; border: 1px solid var(--border-color); background: var(--bg-card); }
+.sector-fund-treemap { width: 100%; min-height: 480px; aspect-ratio: 25 / 18; display: block; border: 1px solid var(--border-color); background: var(--bg-card); }
 .sector-fund-tile { cursor: pointer; outline: none; }
 .sector-fund-tile rect { stroke: rgba(255, 255, 255, .78); stroke-width: 1; transition: opacity .15s, stroke-width .15s; }
 .sector-fund-tile:hover rect, .sector-fund-tile:focus rect { opacity: .88; stroke: #0f172a; stroke-width: 3; }
@@ -189,7 +189,7 @@ td strong, td small { display: block; }
 .sector-fund-value { font-size: 16px; font-weight: 700; }
 .sector-fund-meta { font-size: 12px; opacity: .92; }
 .app-shell.heatmap-shell { width: min(100% - 32px, 1680px); }
-.heatmap-shell .sector-fund-treemap { min-height: 620px; }
+.heatmap-shell .sector-fund-treemap { min-height: 720px; }
 
 /* ------------------- RECOMMENDATIONS ------------------- */
 .recommendations-view { display: flex; flex-direction: column; gap: 18px; }
@@ -353,7 +353,7 @@ td strong, td small { display: block; }
   .app-shell { width: min(100% - 16px, 1340px); padding-top: 16px; }
   .app-shell.heatmap-shell { width: min(100% - 16px, 1680px); }
   .heatmap-asof { width: 100%; justify-content: space-between; }
-  .sector-fund-treemap { min-height: 260px; }
+  .sector-fund-treemap, .heatmap-shell .sector-fund-treemap { min-height: 520px; }
   .market-breadth-banner { grid-template-columns: 1fr; }
   .key-metrics-banner { grid-template-columns: repeat(2, 1fr); padding: 12px 16px; }
   .detail-header { padding: 16px; }
