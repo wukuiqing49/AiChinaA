@@ -200,9 +200,9 @@ export default function App() {
   const [marketHeatmap, setMarketHeatmap] = useState<{
     items: SectorHeatmapItem[];
     asOf: string | null;
-    moneyFlowAsOf: string | null;
+    updatedAt: string | null;
     moneyFlowAvailable: boolean;
-  }>({ items: [], asOf: null, moneyFlowAsOf: null, moneyFlowAvailable: false });
+  }>({ items: [], asOf: null, updatedAt: null, moneyFlowAvailable: false });
   const [top10Items, setTop10Items] = useState<ScreenerItem[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -307,7 +307,7 @@ export default function App() {
       const result = await api.marketHeatmap();
       setMarketHeatmap(result);
     } catch {
-      setMarketHeatmap({ items: [], asOf: null, moneyFlowAsOf: null, moneyFlowAvailable: false });
+      setMarketHeatmap({ items: [], asOf: null, updatedAt: null, moneyFlowAvailable: false });
     }
   }, []);
 
@@ -1162,20 +1162,20 @@ function fundFlowColor(ratio: number | null): string {
 function SectorFundTreemap({
   items,
   asOf,
-  moneyFlowAsOf,
+  updatedAt,
   moneyFlowAvailable,
   onSelectIndustry,
 }: {
   items: SectorHeatmapItem[];
   asOf: string | null;
-  moneyFlowAsOf: string | null;
+  updatedAt: string | null;
   moneyFlowAvailable: boolean;
   onSelectIndustry: (industry: string) => void;
 }) {
   const leaves = useMemo(() => {
     type TreeNode = SectorHeatmapItem | { children: SectorHeatmapItem[] };
     const root = hierarchy<TreeNode>({ children: items })
-      .sum((node) => "turnoverAmount" in node ? Math.max(node.turnoverAmount, 1) : 0)
+      .sum((node) => "inflowAmount" in node ? Math.max(node.inflowAmount + node.outflowAmount, 1) : 0)
       .sort((left, right) => (right.value ?? 0) - (left.value ?? 0));
     return treemap<TreeNode>().size([1000, 560]).paddingInner(4).paddingOuter(2).round(true)(root).leaves()
       .map((leaf) => ({ ...leaf, sector: leaf.data as SectorHeatmapItem }));
@@ -1186,19 +1186,19 @@ function SectorFundTreemap({
       <div className="section-heading">
         <div>
           <h2>板块资金热力图</h2>
-          <span>面积按板块成交额，颜色按主力净流入率</span>
+          <span>面积按流入与流出总额，颜色按净流入率</span>
         </div>
         <div className="heatmap-asof">
-          <span>成交额 {asOf ?? "-"}</span>
-          <span>资金流 {moneyFlowAsOf ?? "-"}</span>
+          <span>数据日 {asOf ?? "-"}</span>
+          <span>更新 {updatedAt ? new Date(updatedAt).toLocaleString("zh-CN", { hour12: false }) : "-"}</span>
         </div>
       </div>
       <div className="heatmap-legend sector-fund-legend">
         <span className="legend-down">净流出</span><i className="legend-down-swatch" /><span>平衡</span><i className="legend-flat" /><span>净流入</span><i className="legend-up" /><em>点击板块查看对应行业股票</em>
       </div>
-      {!moneyFlowAvailable && <p className="heatmap-data-warning">资金流数据待日终同步，当前仅展示板块成交额。</p>}
-      {!leaves.length ? <div className="empty">暂无可用于板块聚合的成交额和行业数据。</div> : (
-        <svg className="sector-fund-treemap" viewBox="0 0 1000 560" role="img" aria-label="按成交额面积展示的板块资金热力图">
+      {!moneyFlowAvailable && <p className="heatmap-data-warning">暂无当天板块资金流数据，请在首页执行刷新。</p>}
+      {!leaves.length ? <div className="empty">暂无可用的当天板块资金流数据。</div> : (
+        <svg className="sector-fund-treemap" viewBox="0 0 1000 560" role="img" aria-label="按资金活动面积展示的板块资金热力图">
           {leaves.map((leaf) => {
             const { sector } = leaf;
             const width = leaf.x1 - leaf.x0;
@@ -1210,7 +1210,8 @@ function SectorFundTreemap({
             const title = sector.industry.length > titleLength
               ? `${sector.industry.slice(0, titleLength - 1)}...`
               : sector.industry;
-            const flowRatio = sector.mainNetInflowRatio === null ? "资金流待同步" : formatRatioPercent(sector.mainNetInflowRatio);
+            const activityAmount = sector.inflowAmount + sector.outflowAmount;
+            const flowRatio = activityAmount > 0 ? formatRatioPercent(sector.netInflow / activityAmount) : "-";
             return (
               <g
                 key={sector.industry}
@@ -1226,14 +1227,14 @@ function SectorFundTreemap({
                   }
                 }}
               >
-                <title>{`${sector.industry}\n成交额 ${formatFundAmount(sector.turnoverAmount)}\n主力净流入 ${formatFundAmount(sector.mainNetInflow)}\n净流入率 ${flowRatio}\n成分股 ${sector.stockCount} 只`}</title>
-                <rect width={width} height={height} fill={fundFlowColor(sector.mainNetInflowRatio)} rx="2" />
+                <title>{`${sector.industry}\n流入 ${formatFundAmount(sector.inflowAmount)}\n流出 ${formatFundAmount(sector.outflowAmount)}\n净流入 ${formatFundAmount(sector.netInflow)}\n净流入率 ${flowRatio}\n公司 ${sector.companyCount ?? "-"} 家`}</title>
+                <rect width={width} height={height} fill={fundFlowColor(activityAmount > 0 ? sector.netInflow / activityAmount : null)} rx="2" />
                 {showTitle && <text className="sector-fund-name" x="10" y="24">{title}</text>}
                 {showFlow && <>
                   <text className="sector-fund-value" x="10" y="47">{flowRatio}</text>
                 </>}
                 {showMeta && <>
-                  <text className="sector-fund-meta" x="10" y="67">成交额 {formatFundAmount(sector.turnoverAmount)} · {sector.stockCount} 只</text>
+                  <text className="sector-fund-meta" x="10" y="67">流入 {formatFundAmount(sector.inflowAmount)} · 流出 {formatFundAmount(sector.outflowAmount)}</text>
                 </>}
               </g>
             );

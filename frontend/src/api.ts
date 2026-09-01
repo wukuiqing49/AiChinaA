@@ -127,14 +127,13 @@ export interface RuleScreenerRequest {
 
 export interface SectorHeatmapItem {
   industry: string;
-  stockCount: number;
-  tradeDate: string | null;
-  moneyFlowDate: string | null;
-  turnoverAmount: number;
-  mainNetInflow: number;
-  moneyFlowCount: number;
-  mainNetInflowRatio: number | null;
+  dataDate: string;
+  inflowAmount: number;
+  outflowAmount: number;
+  netInflow: number;
+  companyCount: number | null;
   pctChange: number | null;
+  updatedAt: string;
 }
 
 export interface SavedStrategy {
@@ -164,7 +163,7 @@ export const api = {
     return request<{ items: ScreenerItem[]; total: number; page: number; pageSize: number; asOf: string | null }>(`/api/screener?${params}`);
   },
   marketIndices: () => request<{ items: MarketIndexItem[] }>("/api/market-indices"),
-  marketHeatmap: () => request<{ items: SectorHeatmapItem[]; asOf: string | null; moneyFlowAsOf: string | null; moneyFlowAvailable: boolean }>("/api/market-heatmap"),
+  marketHeatmap: () => request<{ items: SectorHeatmapItem[]; asOf: string | null; updatedAt: string | null; moneyFlowAvailable: boolean }>("/api/market-heatmap"),
   top10: () => request<{ items: ScreenerItem[] }>("/api/recommendations/top10"),
   ruleDataCapabilities: () => request<RuleDataCapabilities>("/api/rule-data-capabilities"),
   ruleScreener: (rule: RuleScreenerRequest) => request<{ items: ScreenerItem[]; total: number; page: number; pageSize: number }>("/api/rule-screener", {

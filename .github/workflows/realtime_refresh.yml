@@ -57,6 +57,19 @@ jobs:
         run: |
           python -m pipeline.jobs.publish_realtime_quotes --input data/realtime/tencent-quotes.json --timeout 180
 
+      - name: Fetch and publish live industry fund flow
+        run: |
+          for attempt in 1 2 3; do
+            if python -m pipeline.jobs.fetch_industry_fund_flow --output data/realtime/industry-fund-flow.json && python -m pipeline.jobs.publish_industry_fund_flow --input data/realtime/industry-fund-flow.json; then
+              break
+            fi
+            if [ "$attempt" = 3 ]; then
+              echo "::warning::Live industry fund-flow snapshot could not be refreshed after three attempts."
+            else
+              sleep 20
+            fi
+          done
+
       - name: Mark refresh complete
         if: ${{ always() && inputs.refresh_id != '' }}
         run: |

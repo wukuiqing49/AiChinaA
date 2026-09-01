@@ -222,6 +222,19 @@ const moneyFlowPublishSchema = z.object({
     mainNetInflow3d: z.number().nullable(), mainNetInflow5d: z.number().nullable(), mainNetInflow10d: z.number().nullable(),
   })).min(1).max(6000),
 });
+const industryFundFlowPublishSchema = z.object({
+  dataDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  source: z.string().min(1).max(80),
+  persistHistory: z.boolean().default(false),
+  rows: z.array(z.object({
+    industry: z.string().trim().min(1).max(80),
+    inflowAmount: z.number().finite().min(0),
+    outflowAmount: z.number().finite().min(0),
+    netInflow: z.number().finite(),
+    companyCount: z.number().int().min(0).nullable(),
+    pctChange: z.number().finite().nullable(),
+  })).min(1).max(300),
+});
 const valuationPublishSchema = z.object({
   dataDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), source: z.string().min(1).max(80),
   rows: z.array(z.object({ code: z.string().regex(/^\d{6}$/), peTtm: z.number().nullable(), pb: z.number().nullable(), totalMarketCap: z.number().min(0).nullable(), floatMarketCap: z.number().min(0).nullable() })).min(1).max(6000),
@@ -296,42 +309,18 @@ app.get("/api/rule-data-capabilities", async (context) => context.json(await get
 
 app.get("/api/market-heatmap", async (context) => {
   const rows = await context.env.DB.prepare(
-    `WITH sector_source AS (
-       SELECT COALESCE(i.industry, d.industry) AS industry, d.trade_date, d.amount,
-              d.pct_change, f.main_net_inflow, f.data_date AS money_flow_date
-       FROM stock_latest s
-       LEFT JOIN stock_screen_latest d ON d.code = s.code
-       LEFT JOIN stock_industry_latest i ON i.code = s.code
-       LEFT JOIN stock_money_flow_latest f ON f.code = s.code
-      WHERE s.is_st = 0 AND s.instrument_type = 'stock' AND s.updated_at = (${latestFullRunSql})
-        AND NULLIF(TRIM(COALESCE(i.industry, d.industry, '')), '') IS NOT NULL
-     )
-     SELECT industry, COUNT(*) AS stock_count, MAX(trade_date) AS trade_date,
-            MAX(money_flow_date) AS money_flow_date, SUM(COALESCE(amount, 0)) AS turnover_amount,
-            SUM(COALESCE(main_net_inflow, 0)) AS main_net_inflow,
-            SUM(CASE WHEN main_net_inflow IS NOT NULL THEN 1 ELSE 0 END) AS money_flow_count,
-            CASE WHEN SUM(CASE WHEN main_net_inflow IS NOT NULL THEN 1 ELSE 0 END) > 0
-                   AND SUM(COALESCE(amount, 0)) > 0
-              THEN SUM(COALESCE(main_net_inflow, 0)) / SUM(COALESCE(amount, 0))
-              ELSE NULL END AS main_net_inflow_ratio,
-            CASE WHEN SUM(CASE WHEN pct_change IS NOT NULL AND COALESCE(amount, 0) > 0 THEN amount ELSE 0 END) > 0
-              THEN SUM(CASE WHEN pct_change IS NOT NULL THEN pct_change * COALESCE(amount, 0) ELSE 0 END)
-                / SUM(CASE WHEN pct_change IS NOT NULL THEN COALESCE(amount, 0) ELSE 0 END)
-              ELSE NULL END AS pct_change
-       FROM sector_source
-      GROUP BY industry
-     HAVING SUM(COALESCE(amount, 0)) > 0
-      ORDER BY turnover_amount DESC, industry ASC`,
+    `SELECT industry, data_date, inflow_amount, outflow_amount, net_inflow,
+            company_count, pct_change, updated_at
+       FROM industry_fund_flow_latest
+      WHERE inflow_amount + outflow_amount > 0
+      ORDER BY inflow_amount + outflow_amount DESC, industry ASC`,
   ).all<SectorHeatmapRow>();
   const items = rows.results.map(toSectorHeatmapItem);
-  const latestDate = (dates: Array<string | null>) => (
-    dates.filter((date): date is string => date !== null).sort().at(-1) ?? null
-  );
   return context.json({
     items,
-    asOf: latestDate(items.map((item) => item.tradeDate)),
-    moneyFlowAsOf: latestDate(items.map((item) => item.moneyFlowDate)),
-    moneyFlowAvailable: items.some((item) => item.moneyFlowCount > 0),
+    asOf: items.at(0)?.dataDate ?? null,
+    updatedAt: items.map((item) => item.updatedAt).sort().at(-1) ?? null,
+    moneyFlowAvailable: items.length > 0,
   });
 });
 
@@ -690,6 +679,47 @@ app.get("/api/me", async (context) => {
   return context.json({ user: publicUser(user, context.env) });
 });
 
+app.post("/api/internal/publish-industry-fund-flow", async (context) => {
+  if (!context.env.PUBLISH_SECRET || !secretsEqual(context.req.header("X-Publish-Secret") ?? "", context.env.PUBLISH_SECRET)) {
+    return context.json({ error: "Invalid publish credentials." }, 401);
+  }
+  const body = industryFundFlowPublishSchema.safeParse(await context.req.json());
+  if (!body.success) return context.json({ error: "Invalid industry fund-flow payload.", details: body.error.flatten() }, 400);
+  const { dataDate, source, rows, persistHistory } = body.data;
+  const now = new Date().toISOString();
+  const latestStatements = rows.map((row) =>
+    context.env.DB.prepare(
+      `INSERT INTO industry_fund_flow_latest (
+         industry, data_date, source, inflow_amount, outflow_amount, net_inflow,
+         company_count, pct_change, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(industry) DO UPDATE SET data_date=excluded.data_date, source=excluded.source,
+         inflow_amount=excluded.inflow_amount, outflow_amount=excluded.outflow_amount,
+         net_inflow=excluded.net_inflow, company_count=excluded.company_count,
+         pct_change=excluded.pct_change, updated_at=excluded.updated_at`,
+    ).bind(row.industry, dataDate, source, row.inflowAmount, row.outflowAmount, row.netInflow, row.companyCount, row.pctChange, now),
+  );
+  const historyStatements = persistHistory ? rows.map((row) =>
+    context.env.DB.prepare(
+      `INSERT INTO industry_fund_flow_daily (
+         industry, data_date, source, inflow_amount, outflow_amount, net_inflow,
+         company_count, pct_change, fetched_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(industry, data_date) DO UPDATE SET source=excluded.source,
+         inflow_amount=excluded.inflow_amount, outflow_amount=excluded.outflow_amount,
+         net_inflow=excluded.net_inflow, company_count=excluded.company_count,
+         pct_change=excluded.pct_change, fetched_at=excluded.fetched_at`,
+    ).bind(row.industry, dataDate, source, row.inflowAmount, row.outflowAmount, row.netInflow, row.companyCount, row.pctChange, now),
+  ) : [];
+  try {
+    const statements = [...latestStatements, ...historyStatements];
+    for (let index = 0; index < statements.length; index += 100) await context.env.DB.batch(statements.slice(index, index + 100));
+    return context.json({ status: "completed", rowCount: rows.length, dataDate, source, persistHistory, updatedAt: now });
+  } catch (error) {
+    return context.json({ error: error instanceof Error ? error.message.slice(0, 500) : "Industry fund-flow persistence failed." }, 500);
+  }
+});
+
 app.post("/api/internal/publish-realtime-quotes", async (context) => {
   if (!context.env.PUBLISH_SECRET || !secretsEqual(context.req.header("X-Publish-Secret") ?? "", context.env.PUBLISH_SECRET)) {
     return context.json({ error: "Invalid publish credentials." }, 401);
@@ -958,14 +988,13 @@ interface ScreenerRow {
 
 interface SectorHeatmapRow {
   industry: string;
-  stock_count: number;
-  trade_date: string | null;
-  money_flow_date: string | null;
-  turnover_amount: number;
-  main_net_inflow: number;
-  money_flow_count: number;
-  main_net_inflow_ratio: number | null;
+  data_date: string;
+  inflow_amount: number;
+  outflow_amount: number;
+  net_inflow: number;
+  company_count: number | null;
   pct_change: number | null;
+  updated_at: string;
 }
 
 interface DataRefreshRow {
@@ -1050,14 +1079,13 @@ function toScreenerItem(row: ScreenerRow) {
 function toSectorHeatmapItem(row: SectorHeatmapRow) {
   return {
     industry: row.industry,
-    stockCount: row.stock_count,
-    tradeDate: row.trade_date,
-    moneyFlowDate: row.money_flow_date,
-    turnoverAmount: row.turnover_amount,
-    mainNetInflow: row.main_net_inflow,
-    moneyFlowCount: row.money_flow_count,
-    mainNetInflowRatio: row.main_net_inflow_ratio,
+    dataDate: row.data_date,
+    inflowAmount: row.inflow_amount,
+    outflowAmount: row.outflow_amount,
+    netInflow: row.net_inflow,
+    companyCount: row.company_count,
     pctChange: row.pct_change,
+    updatedAt: row.updated_at,
   };
 }
 

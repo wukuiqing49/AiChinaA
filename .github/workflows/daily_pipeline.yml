@@ -88,6 +88,19 @@ jobs:
             fi
           done
 
+      - name: Fetch and publish industry fund flow
+        run: |
+          for attempt in 1 2 3; do
+            if python -m pipeline.jobs.fetch_industry_fund_flow --output data/realtime/industry-fund-flow.json && python -m pipeline.jobs.publish_industry_fund_flow --input data/realtime/industry-fund-flow.json --persist-history; then
+              break
+            fi
+            if [ "$attempt" = 3 ]; then
+              echo "::warning::Industry fund-flow snapshot could not be refreshed after three attempts."
+            else
+              sleep 20
+            fi
+          done
+
       - name: Fetch and publish valuation snapshot
         run: |
           for attempt in 1 2 3; do
