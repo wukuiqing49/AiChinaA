@@ -2,9 +2,6 @@ name: Refresh A-Share Industry Map
 
 on:
   workflow_dispatch:
-  schedule:
-    # Refresh classifications once per week after the daily market pipeline.
-    - cron: '10 8 * * 1'
 
 jobs:
   refresh-industry-map:

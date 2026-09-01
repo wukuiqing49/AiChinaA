@@ -64,10 +64,8 @@ jobs:
         run: |
           python -m pipeline.jobs.publish_screener --input reports/screener-publish.json --timeout 300
 
-      # Classifications change slowly and have a dedicated manual workflow. Refresh them
-      # alongside the Monday post-close settlement.
+      # Keep the sector map aligned with the daily money-flow snapshot used by the heatmap.
       - name: Fetch and publish industry map
-        if: ${{ github.event.schedule == '35 7 * * 1' }}
         continue-on-error: true
         run: |
           for attempt in 1 2 3; do
