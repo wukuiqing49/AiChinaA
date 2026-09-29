@@ -1,8 +1,14 @@
 import json
+from io import BytesIO
+from urllib.error import HTTPError, URLError
 
 import pytest
 
-from pipeline.jobs.publish_screener import DEFAULT_PUBLISH_TIMEOUT_SECONDS, load_payload
+from pipeline.jobs.publish_screener import (
+    DEFAULT_PUBLISH_TIMEOUT_SECONDS,
+    load_payload,
+    publish_payload,
+)
 
 
 def test_default_publish_timeout_allows_full_market_d1_publish() -> None:
@@ -41,3 +47,39 @@ def test_load_payload_accepts_valid_row(tmp_path):
     )
 
     assert load_payload(payload_path)["runId"] == "run-20260825"
+
+
+def test_publish_retries_connection_failure(monkeypatch):
+    calls = []
+    requests = []
+    monkeypatch.setattr(
+        "pipeline.jobs.publish_screener.time.sleep", lambda seconds: calls.append(seconds)
+    )
+
+    def urlopen(request, timeout):
+        requests.append(request)
+        calls.append(timeout)
+        if len(requests) < 4:
+            raise URLError("connection closed")
+        return BytesIO(b'{"status":"completed"}')
+
+    monkeypatch.setattr("pipeline.jobs.publish_screener.urlopen", urlopen)
+    result = publish_payload(
+        {"runId": "run-20260825"}, url="https://example.test", secret="secret", timeout=3
+    )
+    assert result == {"status": "completed"}
+    assert calls == [3, 60, 3, 180, 3, 300, 3]
+    assert len({request.data for request in requests}) == 1
+
+
+def test_publish_does_not_retry_bad_request(monkeypatch):
+    calls = []
+
+    def urlopen(request, timeout):
+        calls.append(timeout)
+        raise HTTPError(request.full_url, 400, "Bad Request", {}, BytesIO(b"invalid payload"))
+
+    monkeypatch.setattr("pipeline.jobs.publish_screener.urlopen", urlopen)
+    with pytest.raises(RuntimeError, match="HTTP 400: invalid payload"):
+        publish_payload({}, url="https://example.test", secret="secret")
+    assert calls == [300]

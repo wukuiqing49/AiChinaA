@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import time
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -31,6 +32,7 @@ REQUIRED_STOCK_FIELDS = {
     "volatility20",
 }
 DEFAULT_PUBLISH_TIMEOUT_SECONDS = 300
+PUBLISH_RETRY_DELAYS_SECONDS = (60, 180, 300)
 
 
 def load_payload(path: Path) -> dict[str, object]:
@@ -74,14 +76,26 @@ def publish_payload(
         },
         method="POST",
     )
-    try:
-        with urlopen(request, timeout=timeout) as response:
-            result = json.loads(response.read().decode("utf-8"))
-    except HTTPError as error:
-        body = error.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"publish failed with HTTP {error.code}: {body}") from error
-    except URLError as error:
-        raise RuntimeError(f"publish request failed: {error.reason}") from error
+    attempts = len(PUBLISH_RETRY_DELAYS_SECONDS) + 1
+    for attempt in range(1, attempts + 1):
+        try:
+            with urlopen(request, timeout=timeout) as response:
+                result = json.loads(response.read().decode("utf-8"))
+            break
+        except HTTPError as error:
+            body = error.read().decode("utf-8", errors="replace")
+            if error.code not in (429, 500, 502, 503, 504) or attempt == attempts:
+                raise RuntimeError(f"publish failed with HTTP {error.code}: {body}") from error
+            reason = f"HTTP {error.code}: {body}"
+        except (URLError, TimeoutError) as error:
+            if attempt == attempts:
+                raise RuntimeError(
+                    f"publish request failed after {attempt} attempts: {error}"
+                ) from error
+            reason = str(error)
+        delay = PUBLISH_RETRY_DELAYS_SECONDS[attempt - 1]
+        print(f"publish attempt {attempt} failed ({reason}); retrying in {delay}s", flush=True)
+        time.sleep(delay)
     if not isinstance(result, dict):
         raise RuntimeError("publish response is not a JSON object")
     return result

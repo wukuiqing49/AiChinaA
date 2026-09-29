@@ -544,15 +544,20 @@ app.post("/api/internal/publish-screener", async (context) => {
   }
   const { runId, tradeDate, runKind, stocks, indices } = body.data;
   const startedAt = new Date().toISOString();
-  const existing = await context.env.DB.prepare("SELECT status, row_count FROM sync_runs WHERE run_id = ?").bind(runId).first<{ status: string; row_count: number }>();
-  if (existing?.status === "completed") {
-    return context.json({ runId, status: existing.status, rowCount: existing.row_count, idempotent: true });
-  }
-  await context.env.DB.prepare(
+  const claim = await context.env.DB.prepare(
     `INSERT INTO sync_runs (run_id, trade_date, run_kind, status, row_count, started_at)
      VALUES (?, ?, ?, 'running', 0, ?)
-     ON CONFLICT(run_id) DO UPDATE SET run_kind = excluded.run_kind, status = 'running', error_message = NULL, started_at = excluded.started_at`,
+     ON CONFLICT(run_id) DO UPDATE SET run_kind = excluded.run_kind, status = 'running',
+       row_count = 0, error_message = NULL, started_at = excluded.started_at, completed_at = NULL
+     WHERE sync_runs.status = 'failed'`,
   ).bind(runId, tradeDate, runKind, startedAt).run();
+  if (claim.meta.changes === 0) {
+    const existing = await context.env.DB.prepare("SELECT status, row_count FROM sync_runs WHERE run_id = ?").bind(runId).first<{ status: string; row_count: number }>();
+    if (existing?.status === "completed") {
+      return context.json({ runId, status: existing.status, rowCount: existing.row_count, idempotent: true });
+    }
+    return context.json({ error: "发布任务正在执行，请稍后重试。", runId }, 503);
+  }
   try {
     const statements = [
       ...stocks.flatMap((stock) => [
