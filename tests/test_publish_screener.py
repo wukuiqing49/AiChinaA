@@ -83,3 +83,25 @@ def test_publish_does_not_retry_bad_request(monkeypatch):
     with pytest.raises(RuntimeError, match="HTTP 400: invalid payload"):
         publish_payload({}, url="https://example.test", secret="secret")
     assert calls == [300]
+
+
+def test_publish_continues_until_worker_completes(monkeypatch):
+    responses = iter(
+        [
+            b'{"status":"running","processedStatements":1000,"totalStatements":2001}',
+            b'{"status":"running","processedStatements":2000,"totalStatements":2001}',
+            b'{"status":"completed","rowCount":1000}',
+        ]
+    )
+    calls = []
+
+    def urlopen(request, timeout):
+        calls.append(request.data)
+        return BytesIO(next(responses))
+
+    monkeypatch.setattr("pipeline.jobs.publish_screener.urlopen", urlopen)
+    result = publish_payload({}, url="https://example.test", secret="secret")
+
+    assert result == {"status": "completed", "rowCount": 1000}
+    assert len(calls) == 3
+    assert len(set(calls)) == 1

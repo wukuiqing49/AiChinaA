@@ -76,29 +76,50 @@ def publish_payload(
         },
         method="POST",
     )
-    attempts = len(PUBLISH_RETRY_DELAYS_SECONDS) + 1
-    for attempt in range(1, attempts + 1):
+    failed_attempts = 0
+    last_progress = 0
+    while True:
         try:
             with urlopen(request, timeout=timeout) as response:
                 result = json.loads(response.read().decode("utf-8"))
-            break
         except HTTPError as error:
             body = error.read().decode("utf-8", errors="replace")
-            if error.code not in (429, 500, 502, 503, 504) or attempt == attempts:
+            if error.code not in (429, 500, 502, 503, 504) or failed_attempts == len(
+                PUBLISH_RETRY_DELAYS_SECONDS
+            ):
                 raise RuntimeError(f"publish failed with HTTP {error.code}: {body}") from error
             reason = f"HTTP {error.code}: {body}"
         except (URLError, TimeoutError) as error:
-            if attempt == attempts:
+            if failed_attempts == len(PUBLISH_RETRY_DELAYS_SECONDS):
                 raise RuntimeError(
-                    f"publish request failed after {attempt} attempts: {error}"
+                    f"publish request failed after {failed_attempts + 1} attempts: {error}"
                 ) from error
             reason = str(error)
-        delay = PUBLISH_RETRY_DELAYS_SECONDS[attempt - 1]
-        print(f"publish attempt {attempt} failed ({reason}); retrying in {delay}s", flush=True)
+        else:
+            if not isinstance(result, dict):
+                raise RuntimeError("publish response is not a JSON object")
+            if result.get("status") != "running":
+                return result
+            progress = result.get("processedStatements")
+            total = result.get("totalStatements")
+            if (
+                not isinstance(progress, int)
+                or not isinstance(total, int)
+                or progress <= last_progress
+                or progress >= total
+            ):
+                raise RuntimeError("publish response contains invalid progress")
+            last_progress = progress
+            failed_attempts = 0
+            print(f"publish progress: {progress}/{total} statements", flush=True)
+            continue
+        delay = PUBLISH_RETRY_DELAYS_SECONDS[failed_attempts]
+        failed_attempts += 1
+        print(
+            f"publish attempt {failed_attempts} failed ({reason}); retrying in {delay}s",
+            flush=True,
+        )
         time.sleep(delay)
-    if not isinstance(result, dict):
-        raise RuntimeError("publish response is not a JSON object")
-    return result
 
 
 def parse_args() -> argparse.Namespace:

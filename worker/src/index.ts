@@ -9,6 +9,8 @@ import type { Env, LatestStock, SessionUser } from "./types";
 
 const app = new Hono<{ Bindings: Env }>();
 const latestFullRunSql = "SELECT started_at FROM sync_runs WHERE status = 'completed' AND run_kind = 'full_market' ORDER BY completed_at DESC LIMIT 1";
+const screenerBatchesPerRequest = 10;
+const screenerLeaseSeconds = 120;
 
 function normalizeSearchTerm(value: string): string {
   return value.normalize("NFKC").toLocaleLowerCase().replace(/\s+/gu, "");
@@ -544,21 +546,39 @@ app.post("/api/internal/publish-screener", async (context) => {
   }
   const { runId, tradeDate, runKind, stocks, indices } = body.data;
   const startedAt = new Date().toISOString();
+  const leaseOwner = crypto.randomUUID();
+  const staleBefore = new Date(Date.now() - screenerLeaseSeconds * 1000).toISOString();
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(body.data)));
+  const payloadHash = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
   const claim = await context.env.DB.prepare(
-    `INSERT INTO sync_runs (run_id, trade_date, run_kind, status, row_count, started_at)
-     VALUES (?, ?, ?, 'running', 0, ?)
-     ON CONFLICT(run_id) DO UPDATE SET run_kind = excluded.run_kind, status = 'running',
-       row_count = 0, error_message = NULL, started_at = excluded.started_at, completed_at = NULL
-     WHERE sync_runs.status = 'failed'`,
-  ).bind(runId, tradeDate, runKind, startedAt).run();
+    `INSERT INTO sync_runs (run_id, trade_date, run_kind, status, row_count, started_at,
+       next_statement_index, lease_owner, lease_updated_at, payload_hash)
+     VALUES (?, ?, ?, 'running', 0, ?, 0, ?, ?, ?)
+     ON CONFLICT(run_id) DO UPDATE SET status = 'running', error_message = NULL,
+       completed_at = NULL, lease_owner = excluded.lease_owner,
+       lease_updated_at = excluded.lease_updated_at
+     WHERE sync_runs.payload_hash = excluded.payload_hash
+       AND (sync_runs.status = 'failed' OR
+         (sync_runs.status = 'running' AND
+           (sync_runs.lease_owner IS NULL OR sync_runs.lease_updated_at < ?)))`,
+  ).bind(runId, tradeDate, runKind, startedAt, leaseOwner, startedAt, payloadHash, staleBefore).run();
+  const existing = await context.env.DB.prepare(
+    "SELECT status, row_count, started_at, next_statement_index, payload_hash FROM sync_runs WHERE run_id = ?",
+  ).bind(runId).first<{ status: string; row_count: number; started_at: string; next_statement_index: number; payload_hash: string | null }>();
+  if (existing?.payload_hash && existing.payload_hash !== payloadHash) {
+    return context.json({ error: "同一任务编号的发布包内容不一致。", runId }, 409);
+  }
   if (claim.meta.changes === 0) {
-    const existing = await context.env.DB.prepare("SELECT status, row_count FROM sync_runs WHERE run_id = ?").bind(runId).first<{ status: string; row_count: number }>();
     if (existing?.status === "completed") {
       return context.json({ runId, status: existing.status, rowCount: existing.row_count, idempotent: true });
     }
     return context.json({ error: "发布任务正在执行，请稍后重试。", runId }, 503);
   }
   try {
+    if (!existing || existing.next_statement_index < 0) {
+      throw new Error("Invalid screener publish progress");
+    }
+    const runStartedAt = existing.started_at;
     const statements = [
       ...stocks.flatMap((stock) => [
       context.env.DB.prepare(
@@ -571,7 +591,7 @@ app.post("/api/internal/publish-screener", async (context) => {
            close = excluded.close, score_total = excluded.score_total,
            data_completeness = excluded.data_completeness, quote_pct_change = excluded.quote_pct_change,
            quote_updated_at = excluded.quote_updated_at, updated_at = excluded.updated_at`,
-      ).bind(stock.code, stock.name, stock.instrumentType, stock.isSt ? 1 : 0, stock.tradeDate, stock.quoteDate, stock.quoteTime, stock.quoteSource, stock.close, stock.scoreTotal, stock.dataCompleteness, stock.pctChange, startedAt, startedAt),
+      ).bind(stock.code, stock.name, stock.instrumentType, stock.isSt ? 1 : 0, stock.tradeDate, stock.quoteDate, stock.quoteTime, stock.quoteSource, stock.close, stock.scoreTotal, stock.dataCompleteness, stock.pctChange, runStartedAt, runStartedAt),
       context.env.DB.prepare(
         `INSERT INTO stock_screen_latest (
            code, trade_date, market, industry, pct_change, turnover_rate, ret_5d, ret_20d,
@@ -593,7 +613,7 @@ app.post("/api/internal/publish-screener", async (context) => {
            max_drawdown_60 = excluded.max_drawdown_60, score_trend = excluded.score_trend,
            score_momentum = excluded.score_momentum, score_volume_price = excluded.score_volume_price,
            score_risk = excluded.score_risk, updated_at = excluded.updated_at`,
-      ).bind(stock.code, stock.tradeDate, stock.market, stock.industry, stock.pctChange, stock.turnoverRate, stock.ret5d, stock.ret20d, stock.ret60d, stock.ma20Slope, stock.volumeRatio20, stock.volatility20, stock.volumeRatio5, stock.amount, stock.amountRatio5, stock.amountRatio20, stock.rsi14, stock.ret120d, stock.ret250d, stock.distanceHigh20, stock.distanceHigh60, stock.distanceHigh250, stock.distanceLow250, stock.pricePercentile250, stock.volatility60, stock.maxDrawdown60, stock.scoreTrend, stock.scoreMomentum, stock.scoreVolumePrice, stock.scoreRisk, startedAt),
+      ).bind(stock.code, stock.tradeDate, stock.market, stock.industry, stock.pctChange, stock.turnoverRate, stock.ret5d, stock.ret20d, stock.ret60d, stock.ma20Slope, stock.volumeRatio20, stock.volatility20, stock.volumeRatio5, stock.amount, stock.amountRatio5, stock.amountRatio20, stock.rsi14, stock.ret120d, stock.ret250d, stock.distanceHigh20, stock.distanceHigh60, stock.distanceHigh250, stock.distanceLow250, stock.pricePercentile250, stock.volatility60, stock.maxDrawdown60, stock.scoreTrend, stock.scoreMomentum, stock.scoreVolumePrice, stock.scoreRisk, runStartedAt),
       ]),
       ...indices.map((index) => context.env.DB.prepare(
         `INSERT INTO market_index_latest (
@@ -604,16 +624,47 @@ app.post("/api/internal/publish-screener", async (context) => {
            quote_date = excluded.quote_date, quote_time = excluded.quote_time, quote_source = excluded.quote_source,
            close = excluded.close, pct_change = excluded.pct_change, ret_20d = excluded.ret_20d,
            ma20_slope = excluded.ma20_slope, volatility_20 = excluded.volatility_20, quote_updated_at = excluded.quote_updated_at, updated_at = excluded.updated_at`,
-      ).bind(index.code, index.name, index.tradeDate, index.quoteDate, index.quoteTime, index.quoteSource, index.close, index.pctChange, index.ret20d, index.ma20Slope, index.volatility20, startedAt, startedAt)),
+      ).bind(index.code, index.name, index.tradeDate, index.quoteDate, index.quoteTime, index.quoteSource, index.close, index.pctChange, index.ret20d, index.ma20Slope, index.volatility20, runStartedAt, runStartedAt)),
     ];
-    for (let index = 0; index < statements.length; index += 100) {
-      await context.env.DB.batch(statements.slice(index, index + 100));
+    if (existing.next_statement_index > statements.length) {
+      throw new Error("Screener publish progress exceeds payload size");
     }
-    await context.env.DB.prepare("UPDATE sync_runs SET status = 'completed', row_count = ?, completed_at = ? WHERE run_id = ?").bind(stocks.length, new Date().toISOString(), runId).run();
+    let nextIndex = existing.next_statement_index;
+    for (let batch = 0; batch < screenerBatchesPerRequest && nextIndex < statements.length; batch += 1) {
+      const batchEnd = Math.min(nextIndex + 100, statements.length);
+      await context.env.DB.batch(statements.slice(nextIndex, batchEnd));
+      const progress = await context.env.DB.prepare(
+        `UPDATE sync_runs SET next_statement_index = MAX(next_statement_index, ?), lease_updated_at = ?
+         WHERE run_id = ? AND status = 'running' AND lease_owner = ?`,
+      ).bind(batchEnd, new Date().toISOString(), runId, leaseOwner).run();
+      if (progress.meta.changes === 0) {
+        return context.json({ error: "发布任务已由其他请求接续。", runId }, 503);
+      }
+      nextIndex = batchEnd;
+    }
+    if (nextIndex < statements.length) {
+      const released = await context.env.DB.prepare(
+        "UPDATE sync_runs SET lease_owner = NULL, lease_updated_at = NULL WHERE run_id = ? AND lease_owner = ?",
+      ).bind(runId, leaseOwner).run();
+      if (released.meta.changes === 0) {
+        return context.json({ error: "发布任务已由其他请求接续。", runId }, 503);
+      }
+      return context.json({ runId, status: "running", processedStatements: nextIndex, totalStatements: statements.length }, 202);
+    }
+    const completed = await context.env.DB.prepare(
+      `UPDATE sync_runs SET status = 'completed', row_count = ?, completed_at = ?,
+         lease_owner = NULL, lease_updated_at = NULL
+       WHERE run_id = ? AND status = 'running' AND lease_owner = ? AND next_statement_index = ?`,
+    ).bind(stocks.length, new Date().toISOString(), runId, leaseOwner, statements.length).run();
+    if (completed.meta.changes === 0) {
+      return context.json({ error: "发布任务已由其他请求接续。", runId }, 503);
+    }
     return context.json({ runId, status: "completed", rowCount: stocks.length });
   } catch (error) {
     const message = error instanceof Error ? error.message.slice(0, 500) : "Unknown publish error";
-    await context.env.DB.prepare("UPDATE sync_runs SET status = 'failed', error_message = ?, completed_at = ? WHERE run_id = ?").bind(message, new Date().toISOString(), runId).run();
+    await context.env.DB.prepare(
+      "UPDATE sync_runs SET status = 'failed', error_message = ?, completed_at = ?, lease_owner = NULL, lease_updated_at = NULL WHERE run_id = ? AND lease_owner = ?",
+    ).bind(message, new Date().toISOString(), runId, leaseOwner).run();
     return context.json({ error: "筛选数据发布失败。", runId }, 500);
   }
 });

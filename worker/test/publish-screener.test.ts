@@ -25,6 +25,34 @@ function envWithExistingRun(status: "running" | "completed") {
 }
 
 describe("screener publish retries", () => {
+  it("publishes a large payload across requests", async () => {
+    const stocks = Array.from({ length: 600 }, (_, index) => ({
+      ...payload.stocks[0], code: String(600001 + index),
+    }));
+    const run = vi.fn().mockResolvedValue({ meta: { changes: 1 } });
+    const first = vi.fn()
+      .mockResolvedValueOnce({ status: "running", started_at: "2026-09-29T00:00:00.000Z", next_statement_index: 0, payload_hash: null })
+      .mockResolvedValueOnce({ status: "running", started_at: "2026-09-29T00:00:00.000Z", next_statement_index: 1000, payload_hash: null });
+    const prepare = vi.fn().mockReturnValue({ bind: vi.fn().mockReturnValue({ run, first }) });
+    const batch = vi.fn().mockResolvedValue([]);
+    const env = { DB: { prepare, batch }, PUBLISH_SECRET: "test-secret" } as unknown as Env;
+    const request = () => app.request("/api/internal/publish-screener", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Publish-Secret": "test-secret" },
+      body: JSON.stringify({ ...payload, stocks }),
+    }, env);
+
+    const firstResponse = await request();
+    expect(firstResponse.status).toBe(202);
+    expect(await firstResponse.json()).toMatchObject({ processedStatements: 1000, totalStatements: 1200 });
+
+    const secondResponse = await request();
+    expect(secondResponse.status).toBe(200);
+    expect(await secondResponse.json()).toMatchObject({ status: "completed", rowCount: 600 });
+    expect(batch).toHaveBeenCalledTimes(12);
+    expect(batch.mock.calls.every(([statements]) => statements.length === 100)).toBe(true);
+  });
+
   it("does not write a second time while the same run is active", async () => {
     const { env, prepare, batch } = envWithExistingRun("running");
     const response = await app.request("/api/internal/publish-screener", {
@@ -51,6 +79,22 @@ describe("screener publish retries", () => {
     expect(await response.json()).toEqual({
       runId: payload.runId, status: "completed", rowCount: 1, idempotent: true,
     });
+    expect(batch).not.toHaveBeenCalled();
+  });
+
+  it("rejects a changed payload for an existing run ID", async () => {
+    const first = vi.fn().mockResolvedValue({ status: "running", payload_hash: "different-hash" });
+    const run = vi.fn().mockResolvedValue({ meta: { changes: 0 } });
+    const prepare = vi.fn().mockReturnValue({ bind: vi.fn().mockReturnValue({ first, run }) });
+    const batch = vi.fn();
+    const env = { DB: { prepare, batch }, PUBLISH_SECRET: "test-secret" } as unknown as Env;
+    const response = await app.request("/api/internal/publish-screener", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Publish-Secret": "test-secret" },
+      body: JSON.stringify(payload),
+    }, env);
+
+    expect(response.status).toBe(409);
     expect(batch).not.toHaveBeenCalled();
   });
 });
