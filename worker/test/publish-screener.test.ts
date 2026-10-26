@@ -43,13 +43,14 @@ describe("screener publish retries", () => {
     }, env);
 
     const firstResponse = await request();
+    expect(prepare.mock.calls.filter(([sql]) => sql.includes("INSERT INTO stock_")).length).toBe(200);
     expect(firstResponse.status).toBe(202);
-    expect(await firstResponse.json()).toMatchObject({ processedStatements: 1000, totalStatements: 1200 });
+    expect(await firstResponse.json()).toMatchObject({ processedStatements: 200, totalStatements: 1200 });
 
     const secondResponse = await request();
     expect(secondResponse.status).toBe(200);
     expect(await secondResponse.json()).toMatchObject({ status: "completed", rowCount: 600 });
-    expect(batch).toHaveBeenCalledTimes(12);
+    expect(batch).toHaveBeenCalledTimes(4);
     expect(batch.mock.calls.every(([statements]) => statements.length === 100)).toBe(true);
   });
 

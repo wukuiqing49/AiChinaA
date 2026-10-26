@@ -84,7 +84,14 @@ def publish_payload(
                 result = json.loads(response.read().decode("utf-8"))
         except HTTPError as error:
             body = error.read().decode("utf-8", errors="replace")
-            if error.code not in (429, 500, 502, 503, 504) or failed_attempts == len(
+            try:
+                details = json.loads(body)
+            except (ValueError, TypeError):
+                details = {}
+            non_retryable = isinstance(details, dict) and (
+                details.get("retryable") is False or details.get("error_code") == 1102
+            )
+            if non_retryable or error.code not in (429, 500, 502, 503, 504) or failed_attempts == len(
                 PUBLISH_RETRY_DELAYS_SECONDS
             ):
                 raise RuntimeError(f"publish failed with HTTP {error.code}: {body}") from error

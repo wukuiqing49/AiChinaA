@@ -9,7 +9,7 @@ import type { Env, LatestStock, SessionUser } from "./types";
 
 const app = new Hono<{ Bindings: Env }>();
 const latestFullRunSql = "SELECT started_at FROM sync_runs WHERE status = 'completed' AND run_kind = 'full_market' ORDER BY completed_at DESC LIMIT 1";
-const screenerBatchesPerRequest = 10;
+const screenerBatchesPerRequest = 2;
 const screenerLeaseSeconds = 120;
 
 function normalizeSearchTerm(value: string): string {
@@ -579,8 +579,16 @@ app.post("/api/internal/publish-screener", async (context) => {
       throw new Error("Invalid screener publish progress");
     }
     const runStartedAt = existing.started_at;
+    const totalStatements = stocks.length * 2 + indices.length;
+    const startIndex = existing.next_statement_index;
+    if (startIndex > totalStatements) {
+      throw new Error("Screener publish progress exceeds payload size");
+    }
+    const endIndex = Math.min(startIndex + screenerBatchesPerRequest * 100, totalStatements);
+    // Prepare only this request's window; continuation requests must not rebuild the market.
+    const stockEnd = Math.min(endIndex, stocks.length * 2);
     const statements = [
-      ...stocks.flatMap((stock) => [
+      ...stocks.slice(Math.floor(startIndex / 2), Math.ceil(stockEnd / 2)).flatMap((stock) => [
       context.env.DB.prepare(
         `INSERT INTO stock_latest (
            code, name, instrument_type, is_st, trade_date, quote_date, quote_time, quote_source, close,
@@ -614,8 +622,8 @@ app.post("/api/internal/publish-screener", async (context) => {
            score_momentum = excluded.score_momentum, score_volume_price = excluded.score_volume_price,
            score_risk = excluded.score_risk, updated_at = excluded.updated_at`,
       ).bind(stock.code, stock.tradeDate, stock.market, stock.industry, stock.pctChange, stock.turnoverRate, stock.ret5d, stock.ret20d, stock.ret60d, stock.ma20Slope, stock.volumeRatio20, stock.volatility20, stock.volumeRatio5, stock.amount, stock.amountRatio5, stock.amountRatio20, stock.rsi14, stock.ret120d, stock.ret250d, stock.distanceHigh20, stock.distanceHigh60, stock.distanceHigh250, stock.distanceLow250, stock.pricePercentile250, stock.volatility60, stock.maxDrawdown60, stock.scoreTrend, stock.scoreMomentum, stock.scoreVolumePrice, stock.scoreRisk, runStartedAt),
-      ]),
-      ...indices.map((index) => context.env.DB.prepare(
+      ]).slice(startIndex % 2, Math.max(0, stockEnd - startIndex) + startIndex % 2),
+      ...indices.slice(Math.max(0, startIndex - stocks.length * 2), Math.max(0, endIndex - stocks.length * 2)).map((index) => context.env.DB.prepare(
         `INSERT INTO market_index_latest (
            code, name, trade_date, quote_date, quote_time, quote_source, close, pct_change,
            ret_20d, ma20_slope, volatility_20, quote_updated_at, updated_at
@@ -626,13 +634,10 @@ app.post("/api/internal/publish-screener", async (context) => {
            ma20_slope = excluded.ma20_slope, volatility_20 = excluded.volatility_20, quote_updated_at = excluded.quote_updated_at, updated_at = excluded.updated_at`,
       ).bind(index.code, index.name, index.tradeDate, index.quoteDate, index.quoteTime, index.quoteSource, index.close, index.pctChange, index.ret20d, index.ma20Slope, index.volatility20, runStartedAt, runStartedAt)),
     ];
-    if (existing.next_statement_index > statements.length) {
-      throw new Error("Screener publish progress exceeds payload size");
-    }
     let nextIndex = existing.next_statement_index;
-    for (let batch = 0; batch < screenerBatchesPerRequest && nextIndex < statements.length; batch += 1) {
-      const batchEnd = Math.min(nextIndex + 100, statements.length);
-      await context.env.DB.batch(statements.slice(nextIndex, batchEnd));
+    for (let batch = 0; batch < screenerBatchesPerRequest && nextIndex < endIndex; batch += 1) {
+      const batchEnd = Math.min(nextIndex + 100, endIndex);
+      await context.env.DB.batch(statements.slice(nextIndex - startIndex, batchEnd - startIndex));
       const progress = await context.env.DB.prepare(
         `UPDATE sync_runs SET next_statement_index = MAX(next_statement_index, ?), lease_updated_at = ?
          WHERE run_id = ? AND status = 'running' AND lease_owner = ?`,
@@ -642,20 +647,20 @@ app.post("/api/internal/publish-screener", async (context) => {
       }
       nextIndex = batchEnd;
     }
-    if (nextIndex < statements.length) {
+    if (nextIndex < totalStatements) {
       const released = await context.env.DB.prepare(
         "UPDATE sync_runs SET lease_owner = NULL, lease_updated_at = NULL WHERE run_id = ? AND lease_owner = ?",
       ).bind(runId, leaseOwner).run();
       if (released.meta.changes === 0) {
         return context.json({ error: "发布任务已由其他请求接续。", runId }, 503);
       }
-      return context.json({ runId, status: "running", processedStatements: nextIndex, totalStatements: statements.length }, 202);
+      return context.json({ runId, status: "running", processedStatements: nextIndex, totalStatements }, 202);
     }
     const completed = await context.env.DB.prepare(
       `UPDATE sync_runs SET status = 'completed', row_count = ?, completed_at = ?,
          lease_owner = NULL, lease_updated_at = NULL
        WHERE run_id = ? AND status = 'running' AND lease_owner = ? AND next_statement_index = ?`,
-    ).bind(stocks.length, new Date().toISOString(), runId, leaseOwner, statements.length).run();
+    ).bind(stocks.length, new Date().toISOString(), runId, leaseOwner, totalStatements).run();
     if (completed.meta.changes === 0) {
       return context.json({ error: "发布任务已由其他请求接续。", runId }, 503);
     }

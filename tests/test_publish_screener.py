@@ -105,3 +105,20 @@ def test_publish_continues_until_worker_completes(monkeypatch):
     assert result == {"status": "completed", "rowCount": 1000}
     assert len(calls) == 3
     assert len(set(calls)) == 1
+
+
+@pytest.mark.parametrize("details", [{"retryable": False}, {"error_code": 1102}])
+def test_publish_does_not_retry_resource_limit(monkeypatch, details):
+    calls = []
+
+    def urlopen(request, timeout):
+        calls.append(timeout)
+        raise HTTPError(request.full_url, 503, "Unavailable", {},
+                        BytesIO(json.dumps(details).encode()))
+
+    monkeypatch.setattr("pipeline.jobs.publish_screener.urlopen", urlopen)
+    monkeypatch.setattr("pipeline.jobs.publish_screener.time.sleep",
+                        lambda _: pytest.fail("non-retryable error must not sleep"))
+    with pytest.raises(RuntimeError, match="HTTP 503"):
+        publish_payload({}, url="https://example.test", secret="secret")
+    assert calls == [300]
