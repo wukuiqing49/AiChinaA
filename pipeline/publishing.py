@@ -40,7 +40,11 @@ def publish_dataset(payload: dict[str, Any], *, url: str, secret: str, timeout: 
     run_id = str(payload.get("runId") or f"publish-{dataset}-{digest[:24]}")
 
     def send(operation: str, **fields: Any) -> dict[str, Any]:
-        result = publish_payload({"operation": operation, "runId": run_id, **fields}, url=url, secret=secret, timeout=timeout)
+        try:
+            result = publish_payload({"operation": operation, "runId": run_id, **fields}, url=url, secret=secret, timeout=timeout)
+        except RuntimeError as error:
+            batch = f", chunkIndex={fields['chunkIndex']}" if "chunkIndex" in fields else ""
+            raise RuntimeError(f"publish {dataset} {operation} failed (runId={run_id}{batch}): {error}") from error
         if result.get("runId") != run_id or result.get("status") not in ("running", "completed"):
             raise RuntimeError(f"invalid publish {operation} response: {result}")
         return result
@@ -53,6 +57,7 @@ def publish_dataset(payload: dict[str, Any], *, url: str, secret: str, timeout: 
     if not isinstance(accepted, list) or any(type(index) is not int or not 0 <= index < len(chunks) for index in accepted):
         raise RuntimeError("invalid accepted publish chunks")
     accepted_set = set(accepted)
+    print(f"publish {dataset}: runId={run_id}, {len(accepted_set)}/{len(chunks)} chunks already accepted", flush=True)
     for index, chunk in enumerate(chunks):
         if index not in accepted_set:
             send("chunk", chunkIndex=index, payload=chunk)

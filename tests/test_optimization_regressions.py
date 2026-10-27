@@ -75,3 +75,28 @@ def test_publish_rejects_unknown_or_nonterminal_server_results(monkeypatch):
     monkeypatch.setattr("pipeline.jobs.publish_screener.urlopen", lambda *_args, **_kwargs: BytesIO(b'{"status":"mystery"}'))
     with pytest.raises(RuntimeError, match="invalid publish"):
         publish_dataset({"rows": [{"code": "600001"}]}, url="https://example.test/publish-valuation", secret="secret")
+
+
+def test_screener_resumes_index_only_tail_without_rechunking_stocks(monkeypatch):
+    sent = []
+
+    def transport(request, timeout):
+        body = json.loads(request.data)
+        sent.append(body)
+        result = {"runId": body["runId"], "status": "completed" if body["operation"] == "commit" else "running"}
+        if body["operation"] == "begin":
+            result["acceptedChunks"] = [0, 1]
+        return BytesIO(json.dumps(result).encode())
+
+    monkeypatch.setattr("pipeline.jobs.publish_screener.urlopen", transport)
+    payload = {"runId": "run-python-index-tail", "tradeDate": "2026-10-27",
+               "stocks": [{"code": str(600000 + i)} for i in range(11)],
+               "indices": [{"code": "000300"}]}
+    publish_dataset(payload, url="https://example.test/publish-screener", secret="secret")
+    assert sent[0]["expectedRows"] == 12
+    assert sent[0]["expectedChunks"] == 3
+    assert sent[0]["meta"]["stockCount"] == 11
+    assert sent[0]["meta"]["indexCount"] == 1
+    assert [body["operation"] for body in sent] == ["begin", "chunk", "commit"]
+    assert sent[1]["chunkIndex"] == 2
+    assert sent[1]["payload"] == {"stocks": [], "indices": [{"code": "000300"}]}

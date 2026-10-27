@@ -34,6 +34,29 @@ describe("versioned publication with real SQLite", () => {
     expect((await db.begin("run-large", 11)).status).toBe(200);
     expect((await db.chunk("run-large", 0, Array.from({ length: 11 }, () => stock))).status).toBe(413);
   });
+  it("resumes an index-only tail chunk before atomically committing the complete market",async()=>{
+    const db=setup();
+    await db.begin("run-index-base",1); await db.chunk("run-index-base",0,[stock]); await db.commit("run-index-base");
+    const runId="run-index-tail";
+    expect((await db.post("screener",{operation:"begin",runId,schemaVersion:2,dataDate:"2026-10-26",
+      expectedRows:14,expectedChunks:3,payloadHash:"c".repeat(64),
+      meta:{tradeDate:"2026-10-26",runKind:"full_market",stockCount:11,indexCount:3}})).status).toBe(200);
+    const stocks=Array.from({length:11},(_,i)=>({...stock,code:String(600001+i),close:20}));
+    await db.chunk(runId,0,stocks.slice(0,10)); await db.chunk(runId,1,stocks.slice(10));
+    expect((await db.commit(runId)).status).toBe(409);
+    expect(db.sqlite.prepare("SELECT COUNT(*) AS n FROM stock_current").get()).toMatchObject({n:1});
+    expect(await (await db.post("screener",{operation:"status",runId})).json()).toMatchObject({acceptedChunks:[0,1],rowCount:11});
+    const indices=Array.from({length:3},(_,i)=>({code:String(900001+i),name:`Index ${i}`,tradeDate:stock.tradeDate,
+      quoteDate:null,quoteTime:null,quoteSource:null,close:3000,pctChange:1,ret20d:0.02,ma20Slope:0.1,volatility20:0.2}));
+    const tail={operation:"chunk",runId,chunkIndex:2,payload:{stocks:[],indices}};
+    const response=await db.post("screener",tail);
+    expect(await response.json()).toMatchObject({status:"running",rowCount:3});
+    expect(response.status).toBe(200);
+    expect(await (await db.post("screener",tail)).json()).toMatchObject({idempotent:true});
+    expect((await db.commit(runId)).status).toBe(200);
+    expect(db.sqlite.prepare("SELECT COUNT(*) AS n FROM stock_current").get()).toMatchObject({n:11});
+    expect(db.sqlite.prepare("SELECT COUNT(*) AS n FROM market_index_current").get()).toMatchObject({n:3});
+  });
   it("keeps old data visible during interruption and switches atomically after resume", async () => {
     const db = setup(); await db.begin("run-first", 1);
     expect((await db.chunk("run-first", 0, [stock])).status).toBe(200); expect((await db.commit("run-first")).status).toBe(200);

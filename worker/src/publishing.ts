@@ -11,7 +11,8 @@ import { snapshotTables } from "./snapshot-tables";
 export const MAX_CHUNK_ROWS = 10;
 const MAX_REQUEST_BYTES = 64 * 1024;
 const schemas: Record<string, z.ZodType> = {
-  screener: screenerPublishSchema.extend({ stocks: screenerPublishSchema.shape.stocks.min(0) }),
+  // Build a new array: .min(0) would retain the full payload's existing .min(1) check.
+  screener: screenerPublishSchema.extend({ stocks: z.array(screenerPublishSchema.shape.stocks.element).max(MAX_CHUNK_ROWS) }),
   "realtime-quotes": realtimeQuotePublishSchema, "fund-flow": moneyFlowPublishSchema,
   "industry-fund-flow": industryFundFlowPublishSchema, valuation: valuationPublishSchema,
   "industry-map": industryPublishSchema, financials: financialPublishSchema,

@@ -48,6 +48,8 @@
 
 ## 验证与明确限制
 
+2026-10-27 指数尾批修复：实际发布暴露出 Zod 数组 `.min(0)` 不会移除已有 `.min(1)` 的问题。改为从股票行 schema 新建批次数组，允许指数批次的 stocks 为空，仍由批次总行数和 manifest 保证非空上传及全量股票数。新增真实 SQLite 的「股票分批 → 指数单独尾批 → 续传 → 原子提交」测试及 Python 保持原批号的续传测试。修复后 Worker 23 项、Python 52 项通过。已接受批次无需重传；部署新版 Worker 后，使用失败 daily 运行的 GitHub run ID 执行 Resume preserved screener publication，恢复原 R2 包；若原任务已过期则重新执行 daily。
+
 2026-10-27 依赖安装修复：实际运行 uv 0.13.6 复现 `--locked` 失败，原因是旧锁文件仍将根项目标记为 `virtual`，与已有 setuptools 构建配置不符。执行 `uv lock` 更新为 `editable`，保留全部依赖版本；各 Python 工作流固定 uv 0.13.6，CI 显式执行 `uv lock --check`。已通过锁文件一致性检查、独立干净环境 `uv sync --locked --no-dev` 安装及导入、Linux 目标平台 dry-run，Python 51 项测试通过。Linux runner 的实际安装仍以 GitHub Actions 新运行结果为准。
 
 - Python：` .venv/Scripts/python.exe -m pytest -q`，51 项通过。
