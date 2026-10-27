@@ -19,7 +19,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install pipeline
-        run: python -m pip install uv && uv sync --locked --no-dev && echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+        run: python -m pip install uv==0.13.6 && uv sync --locked --no-dev && echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
       - name: Build screener package
         run: python -m pipeline.jobs.build_screener --max-stocks 300 --workers 4
       - name: Publish screener package

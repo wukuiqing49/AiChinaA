@@ -48,6 +48,8 @@
 
 ## 验证与明确限制
 
+2026-10-27 依赖安装修复：实际运行 uv 0.13.6 复现 `--locked` 失败，原因是旧锁文件仍将根项目标记为 `virtual`，与已有 setuptools 构建配置不符。执行 `uv lock` 更新为 `editable`，保留全部依赖版本；各 Python 工作流固定 uv 0.13.6，CI 显式执行 `uv lock --check`。已通过锁文件一致性检查、独立干净环境 `uv sync --locked --no-dev` 安装及导入、Linux 目标平台 dry-run，Python 51 项测试通过。Linux runner 的实际安装仍以 GitHub Actions 新运行结果为准。
+
 - Python：` .venv/Scripts/python.exe -m pytest -q`，51 项通过。
 - Worker：`pnpm test:web`，22 项通过；使用真实 SQLite 执行全部迁移和事务，包含 6000 行/600 批、续传、冲突、五种辅助数据、行情顺序、因子分页、清理、鉴权和刷新状态检查。
 - `pnpm lint:web`、`pnpm build` 通过。Wrangler deploy --dry-run 成功识别 AUTH_LIMITER；未执行真实部署。

@@ -33,13 +33,28 @@ jobs:
           RAW_CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           account_id="$(printf '%s' "$RAW_CLOUDFLARE_ACCOUNT_ID" | tr -d '[:space:]')"
-          if [[ -z "$account_id" || ! "$account_id" =~ ^[A-Za-z0-9_-]+$ ]]; then
-            echo "CLOUDFLARE_ACCOUNT_ID must contain only letters, numbers, hyphens, or underscores."
+          if [[ ! "$account_id" =~ ^[A-Fa-f0-9]{32}$ ]]; then
+            echo "::error::CLOUDFLARE_ACCOUNT_ID must be the 32-character hexadecimal Account ID of the account owning quant-core (not a Zone ID, database UUID, or account name)."
             exit 1
           fi
           echo "CLOUDFLARE_ACCOUNT_ID=$account_id" >> "$GITHUB_ENV"
       - name: Apply additive D1 migrations
-        run: pnpm --filter @a-share/worker exec wrangler d1 migrations apply quant-core --remote
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
+            echo "::error::Missing CLOUDFLARE_API_TOKEN repository secret."
+            exit 1
+          fi
+          migration_log=$(mktemp)
+          trap 'rm -f "$migration_log"' EXIT
+          if pnpm --filter @a-share/worker exec wrangler d1 migrations apply quant-core --remote 2>&1 | tee "$migration_log"; then
+            exit 0
+          fi
+          if grep -q '7403' "$migration_log"; then
+            echo "::error::Cloudflare rejected D1 access (7403). Check that CLOUDFLARE_ACCOUNT_ID owns quant-core, CLOUDFLARE_API_TOKEN has Account > D1 > Edit for that same account, and the token is active with IP restrictions compatible with this runner. Workers deployment permission alone does not grant D1 migration permission. See docs/cloudflare-d1-deployment-troubleshooting.md."
+          fi
+          exit 1
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       - run: pnpm --filter @a-share/worker exec wrangler deploy

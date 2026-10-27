@@ -265,7 +265,9 @@ CLOUDFLARE_API_TOKEN
 其中：
 
 - `CLOUDFLARE_ACCOUNT_ID`：Cloudflare 账号 ID
-- `CLOUDFLARE_API_TOKEN`：用于部署 Worker 的 API Token
+- `CLOUDFLARE_API_TOKEN`：用于部署 Worker 的 API Token；自动执行 D1 迁移还需要同账户的 **Account → D1 → Edit** 权限，仅有 Worker 部署权限不够。
+
+如果迁移返回 Cloudflare `7403`，按 [D1 部署权限排查](cloudflare-d1-deployment-troubleshooting.md) 核对账户、令牌权限和资源范围。
 
 之后每次推送到 `main`，文件：
 
