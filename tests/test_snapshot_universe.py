@@ -23,3 +23,10 @@ def test_load_universe_rejects_empty_checkpoint(tmp_path) -> None:
 
     with pytest.raises(ValueError, match="no stock codes"):
         load_universe_codes(checkpoint)
+
+
+def test_stock_coverage_excludes_etfs_indices_and_invalid_records(tmp_path) -> None:
+    checkpoint = tmp_path / "checkpoints.json"
+    checkpoint.write_text(json.dumps({"600001": {"type": "stock"}, "510300": {"type": "etf"},
+                                      "000300": {"type": "index"}, "bad": {}, "600002": None}), encoding="utf-8")
+    assert load_universe_codes(checkpoint) == {"600001"}

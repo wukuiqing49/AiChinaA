@@ -5,7 +5,7 @@ import json
 import os
 from pathlib import Path
 
-from pipeline.jobs.publish_screener import publish_payload
+from pipeline.publishing import publish_dataset
 
 
 def publish(path: Path, url: str, secret: str, *, persist_history: bool = False) -> dict[str, object]:
@@ -14,7 +14,7 @@ def publish(path: Path, url: str, secret: str, *, persist_history: bool = False)
         raise ValueError("industry fund-flow payload must contain rows")
     if persist_history:
         payload["persistHistory"] = True
-    return publish_payload(payload, url=url, secret=secret, timeout=90)
+    return publish_dataset(payload, url=url, secret=secret, timeout=90)
 
 
 def main() -> int:

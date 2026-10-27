@@ -1,0 +1,38 @@
+name: Resume preserved screener publication
+on:
+  workflow_dispatch:
+    inputs:
+      artifact_run_id:
+        description: Daily pipeline run ID whose immutable R2 package should be resumed
+        required: true
+        type: string
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    concurrency:
+      group: a-share-daily-refresh
+      cancel-in-progress: false
+    env:
+      ARTIFACT_RUN_ID: ${{ inputs.artifact_run_id }}
+      R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+      PUBLISH_URL: ${{ secrets.PUBLISH_URL }}
+      PUBLISH_SECRET: ${{ secrets.PUBLISH_SECRET }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install uv && uv sync --locked --no-dev
+      - name: Restore and resume the exact artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$ARTIFACT_RUN_ID" =~ ^[0-9]+$ ]] || { echo 'Invalid run ID'; exit 1; }
+          mkdir -p reports
+          aws s3 cp "s3://${R2_BUCKET}/publishes/${ARTIFACT_RUN_ID}/screener.json" reports/screener-publish.json --endpoint-url "$R2_ENDPOINT"
+          uv run --no-sync python -m pipeline.jobs.publish_screener --input reports/screener-publish.json

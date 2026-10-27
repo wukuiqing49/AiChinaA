@@ -237,7 +237,10 @@ def main() -> int:
     args = parser.parse_args()
     result = fetch_realtime_quotes(args.data_dir, args.output, universe_file=args.universe)
     print(result)
-    return 1 if result["saved"] == 0 else 0
+    coverage = result["saved"] / max(1, result["targets"])
+    if coverage < 0.98:
+        raise RuntimeError(f"Refusing incomplete quote snapshot: coverage={coverage:.2%}")
+    return 0
 
 
 if __name__ == "__main__":

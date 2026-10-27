@@ -129,6 +129,7 @@ export interface ScreenerQuery {
   minTurnover?: string;
   maxVolatility?: string;
   minScore?: string;
+  snapshotId?: string;
   page?: number;
   pageSize?: number;
   sortBy?: string;
@@ -147,6 +148,7 @@ export interface RuleScreenerRequest {
   excludeSt: boolean;
   sortBy: "score" | "price" | "ret20" | "turnover" | "volatility";
   sortDirection: "asc" | "desc";
+  snapshotId?: string;
   page?: number;
   pageSize?: number;
 }
@@ -170,13 +172,27 @@ export interface SavedStrategy {
   updatedAt: string;
 }
 
+export class ApiError extends Error {
+  constructor(message: string, public status: number, public code?: string, public requestId?: string) { super(message); }
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(path, { credentials: "include", ...options });
+  const response = await fetch(path, { credentials: "include", signal: AbortSignal.timeout(20000), ...options });
   if (!response.ok) {
-    const body = (await response.json().catch(() => ({}))) as { error?: string };
-    throw new Error(body.error ?? "Request failed.");
+    const body = (await response.json().catch(() => ({}))) as { error?: string; code?: string; requestId?: string };
+    throw new ApiError(body.error ?? `请求失败（HTTP ${response.status}）`, response.status, body.code, body.requestId);
   }
   return response.status === 204 ? (undefined as T) : ((await response.json()) as T);
+}
+
+async function pagedItems<T>(path: string): Promise<{items:T[]}> {
+  const items:T[]=[];
+  for(let page=1;page<=100;page++) {
+    const result=await request<{items:T[]}>(`${path}?page=${page}`);
+    items.push(...result.items);
+    if(result.items.length<100) return {items};
+  }
+  throw new Error("列表过大，请先减少保存的条目。");
 }
 
 export const api = {
@@ -186,14 +202,14 @@ export const api = {
     for (const [key, value] of Object.entries(query)) {
       if (value !== undefined && value !== "") params.set(key, String(value));
     }
-    return request<{ items: ScreenerItem[]; total: number; page: number; pageSize: number; asOf: string | null }>(`/api/screener?${params}`);
+    return request<{ items: ScreenerItem[]; total: number; page: number; pageSize: number; asOf: string | null; snapshotId: string | null }>(`/api/screener?${params}`);
   },
   marketIndices: () => request<{ items: MarketIndexItem[] }>("/api/market-indices"),
   marketOverview: () => request<MarketOverview>("/api/market-overview"),
   marketHeatmap: () => request<{ items: SectorHeatmapItem[]; asOf: string | null; updatedAt: string | null; moneyFlowAvailable: boolean }>("/api/market-heatmap"),
   top10: () => request<{ items: ScreenerItem[] }>("/api/recommendations/top10"),
   ruleDataCapabilities: () => request<RuleDataCapabilities>("/api/rule-data-capabilities"),
-  ruleScreener: (rule: RuleScreenerRequest) => request<{ items: ScreenerItem[]; total: number; page: number; pageSize: number }>("/api/rule-screener", {
+  ruleScreener: (rule: RuleScreenerRequest) => request<{ items: ScreenerItem[]; total: number; page: number; pageSize: number; snapshotId: string | null }>("/api/rule-screener", {
     method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(rule),
   }),
   dataRefresh: () => request<{ refresh: DataRefresh | null }>("/api/data-refresh"),
@@ -205,14 +221,14 @@ export const api = {
     body: JSON.stringify({ username, password }),
   }),
   logout: () => request<void>("/api/auth/logout", { method: "POST" }),
-  watchlist: () => request<{ items: WatchlistItem[] }>("/api/watchlist"),
+  watchlist: () => pagedItems<WatchlistItem>("/api/watchlist"),
   addWatchlist: (code: string) => request("/api/watchlist", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ code }),
   }),
   removeWatchlist: (code: string) => request<void>(`/api/watchlist/${code}`, { method: "DELETE" }),
-  savedStrategies: () => request<{ items: SavedStrategy[] }>("/api/saved-strategies"),
+  savedStrategies: () => pagedItems<SavedStrategy>("/api/saved-strategies"),
   saveStrategy: (name: string, rule: RuleScreenerRequest) => request<{ item: SavedStrategy }>("/api/saved-strategies", {
     method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name, rule }),
   }),

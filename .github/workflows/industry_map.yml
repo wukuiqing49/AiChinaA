@@ -6,6 +6,7 @@ on:
 jobs:
   refresh-industry-map:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     concurrency:
       group: a-share-industry-map
       cancel-in-progress: false
@@ -19,7 +20,7 @@ jobs:
           python-version: '3.12'
           cache: pip
       - name: Install dependencies
-        run: pip install -e .
+        run: python -m pip install uv && uv sync --locked --no-dev && echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
       - name: Fetch and publish industry map
         run: |
           for attempt in 1 2 3; do

@@ -2,17 +2,18 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from datetime import date, datetime
 from pathlib import Path
 
 import pandas as pd
 
-from pipeline.jobs.snapshot_universe import filter_rows_to_universe, load_universe_codes
+from pipeline.jobs.snapshot_universe import load_universe_codes
 
 
 def num(v: object) -> float | None:
     x = pd.to_numeric(v, errors="coerce")
-    return None if pd.isna(x) else float(x)
+    return None if pd.isna(x) or not math.isfinite(float(x)) else float(x)
 
 
 def latest_report(today: date) -> str:
@@ -25,15 +26,7 @@ def latest_report(today: date) -> str:
     return max(item for item in periods if item <= today).strftime("%Y%m%d")
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Fetch all-market financial-report snapshot.")
-    parser.add_argument("--output", type=Path, default=Path("data/realtime/financials.json"))
-    parser.add_argument("--report-date", default="")
-    parser.add_argument("--universe", type=Path, default=Path("data/historical/checkpoints.json"))
-    args = parser.parse_args()
-    report = args.report_date or latest_report(date.today())
-    import akshare as ak
-
+def fetch_report(ak: object, report: str, today: date) -> list[dict[str, object]]:
     performance = ak.stock_yjbb_em(date=report)
     balance = ak.stock_zcfz_em(date=report)
     left = pd.DataFrame(
@@ -55,18 +48,46 @@ def main() -> int:
         }
     )
     merged = left.merge(right, on="code", how="outer").drop_duplicates("code")
-    rows = filter_rows_to_universe(
-        merged.to_dict(orient="records"), load_universe_codes(args.universe)
-    )
-    if not rows:
-        raise RuntimeError("financial snapshot contains no rows from the current stock universe")
-    payload = {
-        "dataDate": date.today().isoformat(),
-        "reportDate": f"{report[:4]}-{report[4:6]}-{report[6:]}",
-        "source": "akshare/eastmoney",
-        "generatedAt": datetime.now().astimezone().isoformat(),
-        "rows": rows,
-    }
+    merged["reportDate"] = f"{report[:4]}-{report[4:6]}-{report[6:]}"
+    merged["announcementDate"] = pd.to_datetime(merged["announcementDate"], errors="coerce").dt.strftime("%Y-%m-%d")
+    merged = merged.loc[merged["announcementDate"].notna() & (merged["announcementDate"] <= today.isoformat())]
+    return merged.astype(object).where(pd.notna(merged), None).to_dict(orient="records")
+
+
+def report_periods(today: date) -> list[str]:
+    periods = [date(year, month, day) for year in range(today.year - 2, today.year + 1)
+               for month, day in [(3, 31), (6, 30), (9, 30), (12, 31)]]
+    return [item.strftime("%Y%m%d") for item in sorted(periods, reverse=True) if item <= today][:5]
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Fetch latest disclosed financials per stock.")
+    parser.add_argument("--output", type=Path, default=Path("data/realtime/financials.json"))
+    parser.add_argument("--report-date", default="")
+    parser.add_argument("--universe", type=Path, default=Path("data/historical/checkpoints.json"))
+    args = parser.parse_args()
+    from zoneinfo import ZoneInfo
+    today = datetime.now(ZoneInfo("Asia/Shanghai")).date()
+    import akshare as ak
+    codes = load_universe_codes(args.universe)
+    selected = {}
+    errors = []
+    periods = [args.report_date] if args.report_date else report_periods(today)
+    for report in periods:
+        try:
+            for row in fetch_report(ak, report, today):
+                if row["code"] in codes:
+                    selected.setdefault(row["code"], row)
+        except Exception as error:
+            errors.append(f"{report}: {error}")
+        if len(selected) >= len(codes) * 0.98:
+            break
+    rows = list(selected.values())
+    if not rows or len(rows) < len(codes) * 0.8:
+        raise RuntimeError(f"Incomplete financial coverage: {len(rows)}/{len(codes)}; {errors}")
+    payload = {"dataDate": today.isoformat(), "reportDate": max(row["reportDate"] for row in rows),
+               "source": "akshare/eastmoney", "generatedAt": datetime.now().astimezone().isoformat(),
+               "rows": rows, "quality": {"expectedRows": len(codes), "coverage": len(rows) / len(codes)}}
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(
         json.dumps(payload, ensure_ascii=False, allow_nan=False), encoding="utf-8"

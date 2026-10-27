@@ -5,7 +5,7 @@ import json
 import os
 from pathlib import Path
 
-from pipeline.jobs.publish_screener import publish_payload
+from pipeline.publishing import publish_dataset
 
 REQUIRED_QUOTE_FIELDS = {
     "code",
@@ -64,7 +64,7 @@ def main() -> int:
     if args.timeout < 1:
         raise ValueError("publish timeout must be at least one second")
     payload = load_payload(args.input)
-    result = publish_payload(payload, url=args.url, secret=args.secret, timeout=args.timeout)
+    result = publish_dataset(payload, url=args.url, secret=args.secret, timeout=args.timeout)
     print(json.dumps(result, ensure_ascii=False))
     return 0
 

@@ -105,7 +105,7 @@ def publish_payload(
         else:
             if not isinstance(result, dict):
                 raise RuntimeError("publish response is not a JSON object")
-            if result.get("status") != "running":
+            if result.get("status") != "running" or "processedStatements" not in result:
                 return result
             progress = result.get("processedStatements")
             total = result.get("totalStatements")
@@ -155,7 +155,9 @@ def main() -> int:
         raise ValueError("publish timeout must be at least one second")
     payload = load_payload(args.input)
     payload["runKind"] = args.run_kind
-    result = publish_payload(payload, url=args.url, secret=args.secret, timeout=args.timeout)
+    from pipeline.publishing import publish_dataset
+
+    result = publish_dataset(payload, url=args.url, secret=args.secret, timeout=args.timeout)
     print(json.dumps(result, ensure_ascii=False))
     return 0
 

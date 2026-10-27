@@ -11,10 +11,12 @@ on:
 jobs:
   refresh-quotes:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     concurrency:
       group: a-share-realtime-refresh
       cancel-in-progress: false
     env:
+      REFRESH_ID: ${{ inputs.refresh_id }}
       PUBLISH_URL: ${{ secrets.PUBLISH_URL }}
       PUBLISH_SECRET: ${{ secrets.PUBLISH_SECRET }}
       REFRESH_CALLBACK_URL: https://a-share-quant-app.developermantou.workers.dev/api/internal/data-refresh-callback
@@ -31,13 +33,15 @@ jobs:
 
       - name: Install Python Dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install -e .
+          python -m pip install uv
+          uv sync --locked --no-dev
+          echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
 
       - name: Mark refresh running
         if: ${{ inputs.refresh_id != '' }}
         run: |
-          curl --fail-with-body -X POST "$REFRESH_CALLBACK_URL" -H "Content-Type: application/json" -H "X-Refresh-Secret: $REFRESH_CALLBACK_SECRET" -d '{"id":"${{ inputs.refresh_id }}","status":"running"}'
+          details=$(python -c "import json,os; print(json.dumps({'id':os.environ['REFRESH_ID'],'status':'running'}))")
+          curl --connect-timeout 15 --max-time 60 --retry 3 --retry-delay 5 --fail-with-body -X POST "$REFRESH_CALLBACK_URL" -H "Content-Type: application/json" -H "X-Refresh-Secret: $REFRESH_CALLBACK_SECRET" -d "$details"
 
       - name: Fetch current market universe
         run: |
@@ -47,7 +51,7 @@ jobs:
             *) echo "::error::PUBLISH_URL must end with /publish-screener"; exit 1 ;;
           esac
           mkdir -p data/realtime
-          curl --fail-with-body "$UNIVERSE_URL" -H "X-Publish-Secret: $PUBLISH_SECRET" -o data/realtime/market-universe.json
+          curl --connect-timeout 15 --max-time 60 --retry 3 --retry-delay 5 --fail-with-body "$UNIVERSE_URL" -H "X-Publish-Secret: $PUBLISH_SECRET" -o data/realtime/market-universe.json
 
       - name: Fetch real-time market snapshot
         run: |
@@ -60,7 +64,7 @@ jobs:
       - name: Fetch and publish live industry fund flow
         run: |
           for attempt in 1 2 3; do
-            if python -m pipeline.jobs.fetch_industry_fund_flow --output data/realtime/industry-fund-flow.json && python -m pipeline.jobs.publish_industry_fund_flow --input data/realtime/industry-fund-flow.json; then
+            if python -m pipeline.jobs.fetch_industry_fund_flow --output data/realtime/industry-fund-flow.json; then
               break
             fi
             if [ "$attempt" = 3 ]; then
@@ -70,13 +74,14 @@ jobs:
               sleep 20
             fi
           done
+          python -m pipeline.jobs.publish_industry_fund_flow --input data/realtime/industry-fund-flow.json
 
       - name: Mark refresh complete
         if: ${{ always() && inputs.refresh_id != '' }}
         run: |
           if [ "${{ job.status }}" = "success" ]; then
-            details=$(python -c "import json; p=json.load(open('data/realtime/tencent-quotes.json')); q=list(p['quotes'].values()); print(json.dumps({'id':'${{ inputs.refresh_id }}','status':'completed','tradeDate':max(x['quoteDate'] for x in q),'rowCount':len(q)}))")
+            details=$(python -c "import json,os; p=json.load(open('data/realtime/tencent-quotes.json')); q=list(p['quotes'].values()); print(json.dumps({'id':os.environ['REFRESH_ID'],'status':'completed','tradeDate':max(x['quoteDate'] for x in q),'rowCount':len(q)}))")
           else
-            details='{"id":"${{ inputs.refresh_id }}","status":"failed","error":"GitHub Actions real-time refresh failed. Check the workflow run log."}'
+            details=$(python -c "import json,os; print(json.dumps({'id':os.environ['REFRESH_ID'],'status':'failed','error':'GitHub Actions real-time refresh failed. Check the workflow run log.'}))")
           fi
-          curl --fail-with-body -X POST "$REFRESH_CALLBACK_URL" -H "Content-Type: application/json" -H "X-Refresh-Secret: $REFRESH_CALLBACK_SECRET" -d "$details"
+          curl --connect-timeout 15 --max-time 60 --retry 3 --retry-delay 5 --fail-with-body -X POST "$REFRESH_CALLBACK_URL" -H "Content-Type: application/json" -H "X-Refresh-Secret: $REFRESH_CALLBACK_SECRET" -d "$details"

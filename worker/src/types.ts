@@ -1,4 +1,5 @@
 export interface Env {
+  AUTH_LIMITER?: { limit(options: {key:string}): Promise<{success:boolean}> };
   DB: D1Database;
   FIXED_ACCOUNTS: string;
   SESSION_SECRET: string;

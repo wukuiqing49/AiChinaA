@@ -9,6 +9,7 @@ on:
 jobs:
   run-pipeline:
     runs-on: ubuntu-latest
+    timeout-minutes: 180
     concurrency:
       group: a-share-daily-refresh
       cancel-in-progress: false
@@ -32,10 +33,16 @@ jobs:
 
       - name: Install Python Dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install -e .
+          python -m pip install uv
+          uv sync --locked --no-dev
+          echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+
+      - name: Check exchange trading calendar
+        id: calendar
+        run: python -m pipeline.jobs.trading_day
 
       - name: Restore historical snapshot from R2
+        if: ${{ steps.calendar.outputs.is_open == 'true' }}
         run: |
           set -euo pipefail
           if [ -z "$R2_ENDPOINT" ] || [ -z "$R2_BUCKET" ] || [ -z "$AWS_ACCESS_KEY_ID" ] || [ -z "$AWS_SECRET_ACCESS_KEY" ]; then
@@ -52,24 +59,49 @@ jobs:
           test -f data/historical/checkpoints.json
 
       - name: Append post-close daily K-lines
+        if: ${{ steps.calendar.outputs.is_open == 'true' }}
         run: |
           python -m pipeline.jobs.download_history --repair-names
           python -m pipeline.jobs.download_history --incremental --workers 4
 
+      - name: Create and upload refreshed snapshot
+        if: ${{ steps.calendar.outputs.is_open == 'true' }}
+        run: |
+          python -m pipeline.jobs.snapshot_history --output data/snapshots/historical-current.zip
+          python -m pipeline.jobs.snapshot_history --verify data/snapshots/historical-current.zip
+          aws s3 cp data/snapshots/historical-current.zip "s3://${R2_BUCKET}/history/${GITHUB_RUN_ID}.zip" --endpoint-url "$R2_ENDPOINT"
+          aws s3 cp data/snapshots/historical-current.zip "s3://${R2_BUCKET}/historical-current.zip" --endpoint-url "$R2_ENDPOINT"
+
       - name: Fetch real-time market snapshot
+        if: ${{ steps.calendar.outputs.is_open == 'true' }}
         run: |
           python -m pipeline.jobs.fetch_realtime_quotes --data-dir data/historical
 
       - name: Compute Screener & Multi-Factor Scores
+        if: ${{ steps.calendar.outputs.is_open == 'true' }}
         run: |
-          python -m pipeline.jobs.build_screener --data-dir data/historical --output reports/screener-publish.json
+          python -m pipeline.jobs.build_screener --data-dir data/historical --output reports/screener-publish.json --expected-trade-date "${{ steps.calendar.outputs.expected_trade_date }}"
 
+      - name: Preserve resumable publish artifact
+        if: ${{ steps.calendar.outputs.is_open == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: screener-publish
+          path: reports/screener-publish.json
+          retention-days: 30
+      - name: Save immutable publish package to R2
+        if: ${{ steps.calendar.outputs.is_open == 'true' }}
+        run: aws s3 cp reports/screener-publish.json "s3://${R2_BUCKET}/publishes/${GITHUB_RUN_ID}/screener.json" --endpoint-url "$R2_ENDPOINT"
       - name: Publish to Worker
+        if: ${{ steps.calendar.outputs.is_open == 'true' }}
+        id: publish_core
         run: |
           python -m pipeline.jobs.publish_screener --input reports/screener-publish.json --timeout 300
 
       # Keep the sector map aligned with the daily money-flow snapshot used by the heatmap.
       - name: Fetch and publish industry map
+        if: ${{ steps.calendar.outputs.is_open == 'true' }}
+        id: industry_map
         continue-on-error: true
         run: |
           for attempt in 1 2 3; do
@@ -80,59 +112,89 @@ jobs:
           python -m pipeline.jobs.publish_industry_map --input data/realtime/industry-map.json
 
       - name: Fetch and publish stock money flow
+        if: ${{ steps.calendar.outputs.is_open == 'true' }}
+        id: money_flow
+        continue-on-error: true
         run: |
           for attempt in 1 2 3; do
-            if python -m pipeline.jobs.fetch_fund_flow --output data/realtime/fund-flow.json && python -m pipeline.jobs.publish_fund_flow --input data/realtime/fund-flow.json; then
+            if python -m pipeline.jobs.fetch_fund_flow --output data/realtime/fund-flow.json; then
               break
             fi
             if [ "$attempt" = 3 ]; then
               echo "::warning::Money-flow snapshot could not be refreshed after three attempts."
+              exit 1
             else
               sleep 20
             fi
           done
+          python -m pipeline.jobs.publish_fund_flow --input data/realtime/fund-flow.json
 
       - name: Fetch and publish industry fund flow
+        if: ${{ steps.calendar.outputs.is_open == 'true' }}
+        id: sector_flow
+        continue-on-error: true
         run: |
           for attempt in 1 2 3; do
-            if python -m pipeline.jobs.fetch_industry_fund_flow --output data/realtime/industry-fund-flow.json && python -m pipeline.jobs.publish_industry_fund_flow --input data/realtime/industry-fund-flow.json --persist-history; then
+            if python -m pipeline.jobs.fetch_industry_fund_flow --output data/realtime/industry-fund-flow.json; then
               break
             fi
             if [ "$attempt" = 3 ]; then
               echo "::warning::Industry fund-flow snapshot could not be refreshed after three attempts."
+              exit 1
             else
               sleep 20
             fi
           done
+          python -m pipeline.jobs.publish_industry_fund_flow --input data/realtime/industry-fund-flow.json --persist-history
 
       - name: Fetch and publish valuation snapshot
+        if: ${{ steps.calendar.outputs.is_open == 'true' }}
+        id: valuation
+        continue-on-error: true
         run: |
           for attempt in 1 2 3; do
-            if python -m pipeline.jobs.fetch_valuation --output data/realtime/valuation.json && python -m pipeline.jobs.publish_valuation --input data/realtime/valuation.json; then
+            if python -m pipeline.jobs.fetch_valuation --output data/realtime/valuation.json; then
               break
             fi
             if [ "$attempt" = 3 ]; then
               echo "::warning::Valuation snapshot could not be refreshed after three attempts."
+              exit 1
             else
               sleep 20
             fi
           done
+          python -m pipeline.jobs.publish_valuation --input data/realtime/valuation.json
 
       - name: Fetch and publish financial snapshot
+        if: ${{ steps.calendar.outputs.is_open == 'true' }}
+        id: financials
+        continue-on-error: true
         run: |
           for attempt in 1 2 3; do
-            if python -m pipeline.jobs.fetch_financials --output data/realtime/financials.json && python -m pipeline.jobs.publish_financials; then
+            if python -m pipeline.jobs.fetch_financials --output data/realtime/financials.json; then
               break
             fi
             if [ "$attempt" = 3 ]; then
               echo "::warning::Financial snapshot could not be refreshed after three attempts."
+              exit 1
             else
               sleep 20
             fi
           done
+          python -m pipeline.jobs.publish_financials
 
-      - name: Create and upload refreshed snapshot
+
+      - name: Data refresh summary
+        if: ${{ always() }}
         run: |
-          python -m pipeline.jobs.snapshot_history --output data/snapshots/historical-current.zip
-          python -m pipeline.jobs.snapshot_history --verify data/snapshots/historical-current.zip
-          aws s3 cp data/snapshots/historical-current.zip "s3://${R2_BUCKET}/historical-current.zip" --endpoint-url "$R2_ENDPOINT"
+          echo "Core: ${{ steps.publish_core.outcome }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Industry map: ${{ steps.industry_map.outcome }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Money flow: ${{ steps.money_flow.outcome }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Sector flow: ${{ steps.sector_flow.outcome }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Valuation: ${{ steps.valuation.outcome }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Financials: ${{ steps.financials.outcome }}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Bounded dataset retention
+        if: ${{ always() && steps.calendar.outputs.is_open == 'true' }}
+        continue-on-error: true
+        run: python -m pipeline.jobs.cleanup_datasets

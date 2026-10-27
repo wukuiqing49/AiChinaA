@@ -17,3 +17,12 @@ database_id = "05810905-06a8-4f9c-a03c-9bbed5f1b2c3"
 directory = "../frontend/dist"
 not_found_handling = "single-page-application"
 run_worker_first = ["/api/*"]
+
+[[ratelimits]]
+name = "AUTH_LIMITER"
+namespace_id = "42831"
+simple = { limit = 10, period = 60 }
+
+[observability]
+enabled = true
+head_sampling_rate = 0.1

@@ -11,7 +11,11 @@ def load_universe_codes(path: Path) -> set[str]:
     if not isinstance(payload, dict):
         raise ValueError(f"universe checkpoint must be an object: {path}")
 
-    codes = {str(code).zfill(6) for code in payload if str(code).zfill(6).isdigit()}
+    codes = {
+        str(code).zfill(6) for code, checkpoint in payload.items()
+        if len(str(code).zfill(6)) == 6 and str(code).zfill(6).isdigit()
+        and isinstance(checkpoint, dict) and checkpoint.get("type", "stock") == "stock"
+    }
     if not codes:
         raise ValueError(f"universe checkpoint contains no stock codes: {path}")
     return codes

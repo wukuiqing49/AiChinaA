@@ -278,7 +278,27 @@ def run_download(
             target_path = data_dir / sub_folder / f"{res_code}.parquet"
 
             if err is None and frame is not None and not frame.empty:
-                append_or_update_quotes(frame, target_path)
+                if incremental and target_path.exists() and res_type != "index":
+                    existing = load_quotes_file(target_path)
+                    overlap = existing[["trade_date", "close"]].merge(
+                        frame[["trade_date", "close"]], on="trade_date", suffixes=("_old", "_new")
+                    )
+                    changed = (overlap["close_old"] - overlap["close_new"]).abs() > 0.005
+                    if changed.any():
+                        _, _, rebuilt, rebuild_error = _fetch_instrument(
+                            provider, res_code, res_type, str(existing["trade_date"].min()), end_date
+                        )
+                        if rebuild_error or rebuilt is None or rebuilt.empty:
+                            raise RuntimeError(f"Cannot rebuild adjusted history for {res_code}: {rebuild_error}")
+                        if len(rebuilt) < len(existing) or str(rebuilt["trade_date"].min()) > str(existing["trade_date"].min()):
+                            raise RuntimeError(f"Incomplete adjustment rebuild for {res_code}")
+                        from pipeline.storage.parquet_store import save_quotes
+                        save_quotes(rebuilt, target_path)
+                        frame = rebuilt
+                    else:
+                        append_or_update_quotes(frame, target_path)
+                else:
+                    append_or_update_quotes(frame, target_path)
                 
                 # Check total rows in the parquet file
                 try:

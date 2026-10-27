@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 
 REQUIRED_QUOTE_COLUMNS = {
@@ -79,10 +80,10 @@ def _calculate_one_code(frame: pd.DataFrame) -> pd.DataFrame:
         if "amount" in ordered.columns
         else pd.Series(float("nan"), index=ordered.index)
     )
-    returns = close.pct_change()
+    returns = close.pct_change(fill_method=None)
     output = ordered.loc[:, ["code", "trade_date"]].copy()
     for days in (5, 20, 60, 120, 250):
-        output[f"ret_{days}d"] = close.pct_change(days)
+        output[f"ret_{days}d"] = close.pct_change(days, fill_method=None)
         moving_average = close.rolling(days, min_periods=days).mean()
         output[f"ma{days}"] = moving_average
     output["ma20_slope"] = output["ma20"].pct_change(5)
@@ -98,9 +99,10 @@ def _calculate_one_code(frame: pd.DataFrame) -> pd.DataFrame:
     output["price_percentile_250"] = close.rolling(250, min_periods=250).rank(pct=True)
     output["volatility_20"] = returns.rolling(20, min_periods=20).std() * (252**0.5)
     output["volatility_60"] = returns.rolling(60, min_periods=60).std() * (252**0.5)
-    rolling_high = close.rolling(60, min_periods=60).max()
-    drawdown = close / rolling_high - 1
-    output["max_drawdown_60"] = drawdown.rolling(60, min_periods=60).min()
+    # Both the peak and the subsequent trough must be inside this window.
+    output["max_drawdown_60"] = close.rolling(60, min_periods=60).apply(
+        lambda prices: (prices / np.maximum.accumulate(prices) - 1).min(), raw=True
+    )
     return output
 
 

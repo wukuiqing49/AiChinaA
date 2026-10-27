@@ -13,7 +13,9 @@ def save_quotes(frame: pd.DataFrame, file_path: Path) -> None:
         return
     file_path.parent.mkdir(parents=True, exist_ok=True)
     table = pa.Table.from_pandas(frame, preserve_index=False)
-    pq.write_table(table, file_path, compression="snappy")
+    temporary = file_path.with_suffix(file_path.suffix + ".partial")
+    pq.write_table(table, temporary, compression="snappy")
+    temporary.replace(file_path)
 
 
 def append_or_update_quotes(
@@ -42,7 +44,12 @@ def load_quotes_file(
     if not file_path.exists():
         return pd.DataFrame()
 
-    table = pq.read_table(file_path)
+    filters = []
+    if start_date:
+        filters.append(("trade_date", ">=", start_date))
+    if end_date:
+        filters.append(("trade_date", "<=", end_date))
+    table = pq.read_table(file_path, filters=filters or None)
     frame = table.to_pandas()
     if frame.empty or "trade_date" not in frame.columns:
         return frame

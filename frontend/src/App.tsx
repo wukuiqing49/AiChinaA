@@ -1,8 +1,13 @@
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { hierarchy, treemap } from "d3-hierarchy";
 
 import { api, DataRefresh, DataStatus, MarketIndexItem, MarketOverview, Recommendation, RuleCondition, RuleDataCapabilities, RuleScreenerRequest, SavedStrategy, ScreenerItem, ScreenerQuery, SectorHeatmapItem, User, WatchlistItem } from "./api";
 import "./styles.css";
+import { formatNumber,formatPercent,formatRatioPercent,marketDate } from "./formatters";
+import StockDetailPage from "./components/StockDetailPage";
+import RecommendationsView from "./components/RecommendationsView";
+import { ApiError } from "./api";
+import { downloadCsv } from "./csv";
 
 type FilterState = Omit<ScreenerQuery, "page" | "pageSize">;
 type NavTab = "screener" | "heatmap" | "recommendations" | "rules" | "watchlist";
@@ -23,18 +28,6 @@ const emptyFilters: FilterState = {
   sortBy: "score",
   sortDirection: "desc",
 };
-
-function formatNumber(value: number | null, digits = 2): string {
-  return value === null ? "-" : value.toFixed(digits);
-}
-
-function formatPercent(value: number | null): string {
-  return value === null ? "-" : `${value >= 0 ? "+" : ""}${value.toFixed(2)}%`;
-}
-
-function formatRatioPercent(value: number | null): string {
-  return value === null ? "-" : `${value >= 0 ? "+" : ""}${(value * 100).toFixed(2)}%`;
-}
 
 const TECHNICAL_RULE_PRESETS: Array<{ label: string; conditions: RuleCondition[] }> = [
   {
@@ -116,33 +109,11 @@ const OPTIONAL_RULE_FIELD_CAPABILITIES: Partial<Record<RuleCondition["field"], k
   netProfit: "financial",
 };
 
-function marketDate(item: Pick<ScreenerItem | MarketIndexItem, "quoteDate" | "tradeDate">): string {
-  return item.quoteDate ?? item.tradeDate;
-}
-
-function exportToCsv(items: ScreenerItem[], filename = "量化选股数据.csv") {
-  const headers = ["代码", "名称", "市场", "行业", "最新收盘价", "20日涨跌幅(%)", "换手率(%)", "20日年化波动率", "综合量化得分", "数据基准日"];
-  const rows = items.map((item) => [
-    `\t${item.code}`, // \t prevents Excel from stripping leading zeros
-    item.name,
-    item.market ?? "",
-    item.industry ?? "",
-    item.close ?? "",
-    item.ret20d ?? "",
-    item.turnoverRate ?? "",
-    item.volatility20 ?? "",
-    item.score ?? "",
-    marketDate(item),
-  ]);
-  const csvContent = "\uFEFF" + [headers.join(","), ...rows.map((r) => r.map((c) => `"${c}"`).join(","))].join("\n");
-  const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.setAttribute("href", url);
-  link.setAttribute("download", filename);
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
+function exportToCsv(items: ScreenerItem[], filename = "量化选股数据（当前页）.csv") {
+  downloadCsv(["代码", "名称", "市场", "行业", "最新价", "20日涨跌幅(%)", "换手率(%)", "20日年化波动率(%)", "综合得分", "报价日期", "因子日期"],
+    items.map((item) => [`\t${item.code}`, item.name, item.market, item.industry, item.close,
+      item.ret20d === null ? null : item.ret20d * 100, item.turnoverRate,
+      item.volatility20 === null ? null : item.volatility20 * 100, item.score, marketDate(item), item.tradeDate]), filename);
 }
 
 function MarketIndexOverview({ items }: { items: MarketIndexItem[] }) {
@@ -243,30 +214,27 @@ export default function App() {
     try {
       const me = await api.me();
       setUser(me.user);
-      const list = await api.watchlist();
-      setWatchlist(list.items);
-    } catch {
-      setUser(null);
-      setWatchlist([]);
+    } catch (reason) {
+      if (reason instanceof ApiError && reason.status === 401) { setUser(null); setWatchlist([]); }
+      else setError("登录状态加载失败，请稍后重试。");
+      return;
     }
+    try { const list = await api.watchlist(); setWatchlist(list.items); }
+    catch { setError("自选数据暂时无法加载，已保留当前列表。"); }
   }, []);
 
   const loadRecommendations = useCallback(async () => {
     try {
       const res = await api.recommendations();
       setRecommendations(res.items);
-    } catch {
-      setRecommendations([]);
-    }
+    } catch { setError("推荐跟踪暂时无法加载。"); }
   }, []);
 
   const loadMarketIndices = useCallback(async () => {
     try {
       const result = await api.marketIndices();
       setMarketIndices(result.items);
-    } catch {
-      setMarketIndices([]);
-    }
+    } catch { setError("指数数据暂时无法加载。"); }
   }, []);
 
   const loadRefresh = useCallback(async () => {
@@ -288,19 +256,24 @@ export default function App() {
     }
   }
 
+  const screenRequest = useRef(0);
+  const screenSnapshot = useRef<string | null>(null);
   const loadScreen = useCallback(async (nextFilters: FilterState, nextPage: number) => {
+    const requestId = ++screenRequest.current;
     setLoading(true);
     try {
-      const result = await api.screener({ ...nextFilters, page: nextPage, pageSize: 25 });
+      const result = await api.screener({ ...nextFilters, page: nextPage, pageSize: 25, snapshotId: nextPage > 1 ? screenSnapshot.current ?? undefined : undefined });
+      if (requestId !== screenRequest.current) return;
+      screenSnapshot.current = result.snapshotId;
       setItems(result.items);
       setTotal(result.total);
       setPage(result.page);
       setAsOf(result.asOf);
       setError(null);
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "筛选数据加载失败。");
+      if (requestId === screenRequest.current) setError(requestError instanceof Error ? requestError.message : "筛选数据加载失败。");
     } finally {
-      setLoading(false);
+      if (requestId === screenRequest.current) setLoading(false);
     }
   }, []);
 
@@ -308,9 +281,7 @@ export default function App() {
     try {
       const result = await api.marketHeatmap();
       setMarketHeatmap(result);
-    } catch {
-      setMarketHeatmap({ items: [], asOf: null, updatedAt: null, moneyFlowAvailable: false });
-    }
+    } catch { setError("行业资金数据暂时无法加载。"); }
   }, []);
 
   const loadMarketOverview = useCallback(async () => {
@@ -341,9 +312,7 @@ export default function App() {
   useEffect(() => {
     void loadUser();
     void loadScreen(emptyFilters, 1);
-    void loadMarketHeatmap();
-    void loadTop10();
-    void loadRecommendations();
+    // Load feature data when the page is visible.
     void loadMarketIndices();
     void loadMarketOverview();
     void loadRefresh();
@@ -353,15 +322,40 @@ export default function App() {
     if (hash.startsWith("#stock=")) {
       const code = hash.replace("#stock=", "").trim();
       if (code) {
-        void api.screener({ code, page: 1, pageSize: 1 }).then((res) => {
+        void api.screener({ code, page: 1, pageSize: 10 }).then((res) => {
           if (res.items.length) {
             setSelectedStock(res.items[0]);
           }
-        });
+        }).catch((reason) => setError(reason instanceof Error ? reason.message : "详情加载失败。"));
       }
     }
 
   }, [loadDataStatus, loadMarketHeatmap, loadMarketIndices, loadMarketOverview, loadRecommendations, loadRefresh, loadScreen, loadTop10, loadUser]);
+
+  useEffect(() => {
+    if (navTab === "heatmap") void loadMarketHeatmap();
+    if (navTab === "recommendations") { void loadTop10(); if (user) void loadRecommendations(); }
+  }, [navTab, user, loadMarketHeatmap, loadTop10, loadRecommendations]);
+
+  useEffect(() => {
+    if (refresh?.status !== "queued" && refresh?.status !== "running") return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      try {
+        const { refresh: latest } = await api.dataRefresh();
+        if (cancelled) return;
+        setRefresh(latest);
+        if (latest?.status === "completed") {
+          await Promise.all([loadScreen(filters, 1), loadDataStatus(), loadMarketIndices(), loadMarketOverview(), loadMarketHeatmap()]);
+        }
+        if (latest?.status !== "running" && latest?.status !== "queued") return;
+      } catch { if (!cancelled) setRefreshError("更新状态暂时无法读取，正在重试。"); }
+      if (!cancelled) timer = setTimeout(() => void poll(), document.hidden ? 30000 : 5000);
+    };
+    timer = setTimeout(() => void poll(), 3000);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [refresh?.id, refresh?.status, filters, loadScreen, loadDataStatus, loadMarketIndices, loadMarketOverview, loadMarketHeatmap]);
 
   function handleSelectStock(stock: ScreenerItem, fullScreen = false) {
     setSelectedStock(stock);
@@ -725,34 +719,8 @@ export default function App() {
               <button
                 className="secondary-button export-btn"
                 onClick={() => {
-                  const asScreenerItems: ScreenerItem[] = watchlist.map((w) => ({
-                    code: w.code,
-                    name: w.name,
-                    instrumentType: "stock",
-                    isSt: false,
-                    tradeDate: w.latestTradeDate,
-                    quoteDate: null,
-                    quoteTime: null,
-                    quoteSource: null,
-                    close: w.latestClose,
-                    score: w.scoreTotal,
-                    scoreTrend: null,
-                    scoreMomentum: null,
-                    scoreVolumePrice: null,
-                    scoreRisk: null,
-                    dataCompleteness: 1,
-                    market: null,
-                    industry: null,
-                    pctChange: null,
-                    turnoverRate: null,
-                    ret5d: null,
-                    ret20d: w.tracking.returnPct,
-                    ret60d: null,
-                    ma20Slope: null,
-                    volumeRatio20: null,
-                    volatility20: null,
-                  }));
-                  exportToCsv(asScreenerItems, "我的自选池.csv");
+                  downloadCsv(["代码", "名称", "观察日期", "观察价格", "最新报价日期", "最新价", "观察以来价格收益(%)"],
+                    watchlist.map((w) => [`\t${w.code}`,w.name,w.observationTradeDate,w.observationClose,w.latestTradeDate,w.latestClose,w.tracking.returnPct]), "我的自选池.csv");
                 }}
               >
                 📥 导出自选池为 CSV
@@ -766,9 +734,9 @@ export default function App() {
                 if (found) {
                   handleSelectStock(found, false);
                 } else {
-                  void api.screener({ code, page: 1, pageSize: 1 }).then((res) => {
+                  void api.screener({ code, page: 1, pageSize: 10 }).then((res) => {
                     if (res.items.length) handleSelectStock(res.items[0], false);
-                  });
+                  }).catch((reason) => setError(reason instanceof Error ? reason.message : "详情加载失败。"));
                 }
               }}
             />
@@ -918,7 +886,7 @@ function ScreenerTable({
                 {formatRatioPercent(item.ret20d)}
               </td>
               <td>{formatNumber(item.turnoverRate)}%</td>
-              <td>{formatNumber(item.volatility20)}</td>
+              <td>{(item.volatility20 === null ? "-" : `${(item.volatility20 * 100).toFixed(2)}%`)}</td>
               <td>
                 <span className="score-badge">{formatNumber(item.score, 1)}</span>
                 <small>{item.dataCompleteness === null ? "-" : `${(item.dataCompleteness * 100).toFixed(0)}% 完整`}</small>
@@ -996,142 +964,6 @@ function WatchlistTable({
 }
 
 /** ------------------- MARKET HEATMAP COMPONENT ------------------- */
-function MarketHeatmapView({
-  items,
-  onSelectStock,
-}: {
-  items: ScreenerItem[];
-  onSelectStock: (item: ScreenerItem) => void;
-}) {
-  const [heatmapType, setHeatmapType] = useState<"sectors" | "tradingview">("sectors");
-  const [metricType, setMetricType] = useState<"ret20" | "score">("ret20");
-
-  const sectors = useMemo(() => {
-    const map = new Map<string, ScreenerItem[]>();
-    for (const item of items) {
-      const ind = item.industry || (item.code.startsWith("5") || item.code.startsWith("1") ? "ETF基金" : "其他主板");
-      if (!map.has(ind)) map.set(ind, []);
-      map.get(ind)!.push(item);
-    }
-    return Array.from(map.entries()).map(([industry, stocks]) => {
-      const avgRet =
-        stocks.reduce((sum, s) => sum + (s.ret20d ?? 0), 0) / (stocks.length || 1);
-      const avgScore =
-        stocks.reduce((sum, s) => sum + (s.score ?? 50), 0) / (stocks.length || 1);
-      return { industry, stocks, avgRet, avgScore };
-    }).sort((a, b) => b.stocks.length - a.stocks.length);
-  }, [items]);
-
-  function getTileBg(ret: number | null): string {
-    if (ret === null) return "#64748b";
-    if (ret >= 15) return "#b91c1c";
-    if (ret >= 8) return "#dc2626";
-    if (ret >= 3) return "#ef4444";
-    if (ret > 0) return "#f87171";
-    if (ret === 0) return "#94a3b8";
-    if (ret <= -15) return "#15803d";
-    if (ret <= -8) return "#16a34a";
-    if (ret <= -3) return "#22c55e";
-    return "#4ade80";
-  }
-
-  function getScoreBg(score: number | null): string {
-    if (score === null) return "#64748b";
-    if (score >= 85) return "#047857";
-    if (score >= 70) return "#059669";
-    if (score >= 50) return "#10b981";
-    if (score >= 35) return "#d97706";
-    return "#dc2626";
-  }
-
-  return (
-    <section className="view-container heatmap-view">
-      <div className="section-heading">
-        <div>
-          <h2>A 股全景热力图</h2>
-          <span>直观洞察板块冷热格局、资金聚焦行业与强势龙头</span>
-        </div>
-        <div className="heatmap-controls">
-          <div className="toggle-group">
-            <button
-              className={heatmapType === "sectors" ? "toggle-btn active" : "toggle-btn"}
-              onClick={() => setHeatmapType("sectors")}
-            >
-              📊 量化板块热力图
-            </button>
-            <button
-              className={heatmapType === "tradingview" ? "toggle-btn active" : "toggle-btn"}
-              onClick={() => setHeatmapType("tradingview")}
-            >
-              🌐 TradingView 云端热力图
-            </button>
-          </div>
-
-          {heatmapType === "sectors" && (
-            <div className="toggle-group">
-              <button
-                className={metricType === "ret20" ? "toggle-btn active" : "toggle-btn"}
-                onClick={() => setMetricType("ret20")}
-              >
-                按 20日涨跌
-              </button>
-              <button
-                className={metricType === "score" ? "toggle-btn active" : "toggle-btn"}
-                onClick={() => setMetricType("score")}
-              >
-                按 量化评分
-              </button>
-            </div>
-          )}
-        </div>
-      </div>
-
-      {heatmapType === "sectors" ? (
-        <div className="sectors-heatmap-grid">
-          {sectors.map((sec) => (
-            <div key={sec.industry} className="sector-block">
-              <div className="sector-header">
-                <strong>{sec.industry}</strong>
-                <span className={sec.avgRet >= 0 ? "positive" : "negative"}>
-                  {metricType === "ret20" ? formatRatioPercent(sec.avgRet) : `均分: ${sec.avgScore.toFixed(1)}`}
-                </span>
-              </div>
-              <div className="stock-tiles-container">
-                {sec.stocks.map((stk) => {
-                  const bg = metricType === "ret20" ? getTileBg(stk.ret20d) : getScoreBg(stk.score);
-                  return (
-                    <div
-                      key={stk.code}
-                      className="stock-heat-tile"
-                      style={{ backgroundColor: bg }}
-                      onClick={() => onSelectStock(stk)}
-                      title={`${stk.name} (${stk.code})\n价格: ¥${stk.close}\n20日涨幅: ${formatRatioPercent(stk.ret20d)}\n综合得分: ${stk.score}`}
-                    >
-                      <span className="tile-name">{stk.name}</span>
-                      <span className="tile-metric">
-                        {metricType === "ret20" ? formatRatioPercent(stk.ret20d) : formatNumber(stk.score, 1)}
-                      </span>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          ))}
-        </div>
-      ) : (
-        <div className="tv-heatmap-frame">
-          <iframe
-            title="TradingView Market Heatmap"
-            src="https://s.tradingview.com/embed-widget/stock-heatmap/?locale=zh_CN#%7B%22dataSource%22%3A%22China%22%2C%22blockSize%22%3A%22market_cap_basic%22%2C%22blockColor%22%3A%22change%22%2C%22grouping%22%3A%22sector%22%2C%22theme%22%3A%22light%22%2C%22hasTopBar%22%3Atrue%2C%22isDataSetEnabled%22%3Atrue%7D"
-            className="full-tv-iframe"
-          />
-        </div>
-      )}
-    </section>
-  );
-}
-
-/** Sector heatmap: uses the independent all-market endpoint, never the search result. */
 function formatFundAmount(value: number): string {
   const absolute = Math.abs(value);
   if (absolute >= 1e8) return `${(value / 1e8).toFixed(1)}亿`;
@@ -1265,230 +1097,6 @@ function SectorFundTreemap({
   );
 }
 
-function MarketHeatmapViewV2({
-  items,
-  onSelectStock,
-}: {
-  items: ScreenerItem[];
-  onSelectStock: (item: ScreenerItem) => void;
-}) {
-  const [metric, setMetric] = useState<"day" | "ret5" | "ret20">("day");
-  const value = (stock: ScreenerItem) => metric === "day" ? stock.pctChange : metric === "ret5" ? stock.ret5d : stock.ret20d;
-  const label = metric === "day" ? "当日涨跌" : metric === "ret5" ? "5日涨跌" : "20日涨跌";
-  const color = (change: number | null) => {
-    if (change === null) return "#64748b";
-    if (change >= 7) return "#b91c1c";
-    if (change >= 3) return "#dc2626";
-    if (change >= 1) return "#ef4444";
-    if (change > 0) return "#fb7185";
-    if (change === 0) return "#94a3b8";
-    if (change <= -7) return "#15803d";
-    if (change <= -3) return "#16a34a";
-    if (change <= -1) return "#22c55e";
-    return "#4ade80";
-  };
-  const sectors = useMemo(() => {
-    const groups = new Map<string, ScreenerItem[]>();
-    for (const stock of items) {
-      const industry = stock.industry || (stock.instrumentType === "etf" ? "ETF基金" : "待分类");
-      groups.set(industry, [...(groups.get(industry) ?? []), stock]);
-    }
-    return [...groups.entries()].map(([industry, stocks]) => {
-      const sorted = [...stocks].sort((a, b) => (b.floatMarketCap ?? b.totalMarketCap ?? 0) - (a.floatMarketCap ?? a.totalMarketCap ?? 0));
-      const cap = sorted.reduce((sum, stock) => sum + Math.max(stock.floatMarketCap ?? stock.totalMarketCap ?? 0, 0), 0);
-      const usable = sorted.filter((stock) => value(stock) !== null);
-      const weight = usable.reduce((sum, stock) => sum + Math.max(stock.floatMarketCap ?? stock.totalMarketCap ?? 1, 1), 0);
-      const average = weight ? usable.reduce((sum, stock) => sum + (value(stock) ?? 0) * Math.max(stock.floatMarketCap ?? stock.totalMarketCap ?? 1, 1), 0) / weight : null;
-      return { industry, stocks: sorted, cap, average };
-    }).sort((a, b) => b.cap - a.cap || b.stocks.length - a.stocks.length);
-  }, [items, metric]);
-
-  return (
-    <section className="view-container heatmap-view">
-      <div className="section-heading">
-        <div>
-          <h2>A股板块热力图</h2>
-          <span>行业归类 · 红涨绿跌 · 面积优先按流通市值</span>
-        </div>
-        <div className="heatmap-controls">
-          <div className="toggle-group">
-            {(["day", "ret5", "ret20"] as const).map((key) => (
-              <button key={key} className={metric === key ? "toggle-btn active" : "toggle-btn"} onClick={() => setMetric(key)}>
-                {key === "day" ? "当日涨跌" : key === "ret5" ? "5日涨跌" : "20日涨跌"}
-              </button>
-            ))}
-          </div>
-        </div>
-      </div>
-      <div className="heatmap-legend"><span className="legend-down">下跌</span><i className="legend-flat" /><span>平盘</span><i className="legend-up" /><span>上涨</span><em>板块涨跌按市值加权；点击个股可查看详情</em></div>
-      {!items.length ? <div className="empty">暂无可用的全市场热力数据。</div> : (
-        <div className="sector-treemap">
-          {sectors.map((sector) => (
-            <section key={sector.industry} className="sector-treemap-block" style={{ gridColumn: `span ${sector.cap >= 5e11 ? 2 : 1}` }}>
-              <header className="sector-treemap-header" style={{ borderColor: color(sector.average) }}>
-                <strong>{sector.industry} <small>{sector.stocks.length}只</small></strong>
-                <span className={(sector.average ?? 0) >= 0 ? "positive" : "negative"}>{metric === "day" ? formatPercent(sector.average) : formatRatioPercent(sector.average)}</span>
-              </header>
-              <div className="sector-stock-tiles">
-                {sector.stocks.slice(0, 42).map((stock) => {
-                  const marketCap = stock.floatMarketCap ?? stock.totalMarketCap ?? 1e8;
-                  const grow = Math.max(1, Math.min(5, Math.log10(marketCap / 1e8 + 1)));
-                  const formattedValue = metric === "day" ? formatPercent(value(stock)) : formatRatioPercent(value(stock));
-                  return <button key={stock.code} className="sector-stock-tile" style={{ backgroundColor: color(value(stock)), flexGrow: grow }} onClick={() => onSelectStock(stock)} title={`${stock.name} ${stock.code}\n${label}: ${formattedValue}`}>
-                    <span>{stock.name}</span><b>{formattedValue}</b>
-                  </button>;
-                })}
-                {sector.stocks.length > 42 && <span className="sector-more-tile">+{sector.stocks.length - 42}只</span>}
-              </div>
-            </section>
-          ))}
-        </div>
-      )}
-    </section>
-  );
-}
-
-/** ------------------- RECOMMENDATIONS COMPONENT ------------------- */
-function RecommendationsView({
-  recommendations,
-  screenerItems,
-  user,
-  watchlist,
-  onAdd,
-  onSelectStock,
-}: {
-  recommendations: Recommendation[];
-  screenerItems: ScreenerItem[];
-  user: User | null;
-  watchlist: WatchlistItem[];
-  onAdd: (code: string) => Promise<void>;
-  onSelectStock: (item: ScreenerItem) => void;
-}) {
-  const displayItems = useMemo(() => {
-    if (recommendations.length > 0) {
-      return recommendations.map((r) => ({
-        code: r.code,
-        name: r.name,
-        rank: r.rank,
-        score: r.score,
-        referenceClose: r.referenceClose,
-        referenceDate: r.referenceTradeDate,
-        latestClose: r.latestClose,
-        returnPct: r.tracking.returnPct,
-        screenerItem: screenerItems.find((s) => s.code === r.code) || {
-          code: r.code,
-          name: r.name,
-          instrumentType: r.code.startsWith("5") || r.code.startsWith("1") ? "etf" : "stock",
-          isSt: false,
-          tradeDate: r.latestTradeDate,
-          quoteDate: null,
-          quoteTime: null,
-          quoteSource: null,
-          close: r.latestClose,
-          score: r.score,
-          scoreTrend: null,
-          scoreMomentum: null,
-          scoreVolumePrice: null,
-          scoreRisk: null,
-          dataCompleteness: 1,
-          market: r.code.startsWith("6") ? "SH" : "SZ",
-          industry: "推荐标的",
-          pctChange: null,
-          turnoverRate: null,
-          ret5d: null,
-          ret20d: null,
-          ret60d: null,
-          ma20Slope: null,
-          volumeRatio20: null,
-          volatility20: null,
-        },
-      }));
-    }
-
-    const top = [...screenerItems].sort((a, b) => (b.score ?? 0) - (a.score ?? 0)).slice(0, 10);
-    return top.map((s, idx) => ({
-      code: s.code,
-      name: s.name,
-      rank: idx + 1,
-      score: s.score ?? 0,
-      referenceClose: s.close ?? 0,
-      referenceDate: s.tradeDate,
-      latestClose: s.close,
-      returnPct: s.ret20d === null ? null : s.ret20d * 100,
-      screenerItem: s,
-    }));
-  }, [recommendations, screenerItems]);
-
-  return (
-    <section className="view-container recommendations-view">
-      <div className="section-heading">
-        <div>
-          <h2>🏆 每日量化精选 Top 10 推荐池</h2>
-          <span>多因子评分模型每日收盘后筛选出的最具多头潜力的核心标的（不可篡改基准价，真实跟踪）</span>
-        </div>
-      </div>
-
-      <div className="recommendations-grid">
-        {displayItems.map((rec) => {
-          const isWatch = watchlist.some((w) => w.code === rec.code);
-          return (
-            <div
-              key={rec.code}
-              className="rec-card clickable-row"
-              onClick={() => onSelectStock(rec.screenerItem)}
-            >
-              <div className="rec-badge-wrap">
-                <span className={`rank-badge rank-${rec.rank <= 3 ? rec.rank : "normal"}`}>
-                  Top {rec.rank}
-                </span>
-                <span className="rec-score-pill">得分: {formatNumber(rec.score, 1)}</span>
-              </div>
-
-              <div className="rec-stock-title">
-                <h3>{rec.name}</h3>
-                <span className="rec-code">{rec.code}</span>
-              </div>
-
-              <div className="rec-data-grid">
-                <div className="rec-data-cell">
-                  <span className="label">推荐基准价</span>
-                  <span className="val">¥ {formatNumber(rec.referenceClose)}</span>
-                </div>
-                <div className="rec-data-cell">
-                  <span className="label">最新价</span>
-                  <span className="val">¥ {formatNumber(rec.latestClose)}</span>
-                </div>
-                <div className="rec-data-cell">
-                  <span className="label">跟踪收益率</span>
-                  <span className={`val ${rec.returnPct !== null && rec.returnPct < 0 ? "negative" : "positive"}`}>
-                    {formatPercent(rec.returnPct)}
-                  </span>
-                </div>
-              </div>
-
-              <div className="rec-reasons">
-                <span className="reason-tag">📈 均线多头</span>
-                <span className="reason-tag">⚡ 动量领先</span>
-                <span className="reason-tag">🛡️ 波动可控</span>
-              </div>
-
-              <div className="rec-card-footer" onClick={(e) => e.stopPropagation()}>
-                <button
-                  className={`small-button ${isWatch ? "secondary-button" : "primary-button"}`}
-                  onClick={() => void onAdd(rec.code)}
-                >
-                  {isWatch ? "★ 已在自选" : user ? "+ 加自选" : "登录自选"}
-                </button>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </section>
-  );
-}
-
-/** ------------------- CUSTOM RULE SCREENER COMPONENT ------------------- */
 function CustomRuleScreenerView({
   user,
   onAdd,
@@ -1508,6 +1116,9 @@ function CustomRuleScreenerView({
   const [excludeSt, setExcludeSt] = useState(true);
   const [sortBy, setSortBy] = useState<RuleScreenerRequest["sortBy"]>("score");
   const [sortDirection, setSortDirection] = useState<RuleScreenerRequest["sortDirection"]>("desc");
+  const [rulePage,setRulePage]=useState(1);
+  const ruleSnapshot=useRef<string | null>(null);
+  const ruleRequest=useRef(0);
   const [matchedItems, setMatchedItems] = useState<ScreenerItem[]>([]);
   const [total, setTotal] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
@@ -1606,16 +1217,20 @@ function CustomRuleScreenerView({
       return next;
     }));
   }
-  async function runScreener() {
+  async function runScreener(nextPage=1) {
     const unavailable = conditions.find((condition) => isUnavailableField(condition.field));
     if (unavailable) {
       setError("所选字段的数据尚未就绪。");
       return;
     }
+    const requestId=++ruleRequest.current;
     setLoading(true); setError(null);
-    try { const result = await api.ruleScreener({ logic, conditions, excludeSt, sortBy, sortDirection, page: 1, pageSize: 100 }); setMatchedItems(result.items); setTotal(result.total); }
-    catch (reason) { setError(reason instanceof Error ? reason.message : "规则选股执行失败。"); setMatchedItems([]); setTotal(null); }
-    finally { setLoading(false); }
+    try {
+      const result = await api.ruleScreener({ logic, conditions, excludeSt, sortBy, sortDirection, page: nextPage, pageSize: 100, snapshotId: nextPage>1 ? ruleSnapshot.current ?? undefined : undefined });
+      if(requestId!==ruleRequest.current) return;
+      ruleSnapshot.current=result.snapshotId; setRulePage(nextPage); setMatchedItems(result.items); setTotal(result.total);
+    } catch (reason) { if(requestId===ruleRequest.current) setError(reason instanceof Error ? reason.message : "规则选股执行失败。"); }
+    finally { if(requestId===ruleRequest.current) setLoading(false); }
   }
   function importJsonRules() {
     try {
@@ -1751,10 +1366,15 @@ function CustomRuleScreenerView({
         <div className="section-heading">
           <div>
             <h3>策略匹配结果清单</h3>
-            <span>{total === null ? "请先配置并执行选股条件" : `共找到 ${total} 只符合条件的标的`}</span>
+            <span>{total === null ? "请先配置并执行选股条件" : `共找到 ${total} 只符合条件的标的，第 ${rulePage} 页，当前 ${matchedItems.length} 只`}</span>
           </div>
         </div>
 
+        {total !== null && total>100 && <div className="pagination">
+          <button disabled={loading || rulePage<=1} onClick={()=>void runScreener(rulePage-1)}>上一页</button>
+          <span>{rulePage} / {Math.ceil(total/100)}</span>
+          <button disabled={loading || rulePage*100>=total} onClick={()=>void runScreener(rulePage+1)}>下一页</button>
+        </div>}
         <ScreenerTable
           items={matchedItems}
           user={user}
@@ -1768,362 +1388,3 @@ function CustomRuleScreenerView({
 }
 
 /** ------------------- STOCK DETAIL PAGE / DRAWER ------------------- */
-function StockDetailPage({
-  stock,
-  user,
-  theme,
-  isFullScreen,
-  isWatchlisted,
-  onAdd,
-  onToggleFullScreen,
-  onClose,
-}: {
-  stock: ScreenerItem;
-  user: User | null;
-  theme: "light" | "dark";
-  isFullScreen: boolean;
-  isWatchlisted: boolean;
-  onAdd: (code: string) => Promise<void>;
-  onToggleFullScreen: () => void;
-  onClose: () => void;
-}) {
-  const [chartInterval, setChartInterval] = useState<"D" | "W" | "60" | "15">("D");
-  const [activeDetailTab, setActiveDetailTab] = useState<"chart" | "quant" | "f10">("chart");
-
-  const isSh = stock.code.startsWith("6") || stock.code.startsWith("5");
-  const marketPrefix = isSh ? "SH" : "SZ";
-  const tvSymbol = isSh ? `SSE:${stock.code}` : `SZSE:${stock.code}`;
-
-  const eastmoneyUrl = isSh
-    ? `https://quote.eastmoney.com/concept/sh${stock.code}.html`
-    : `https://quote.eastmoney.com/concept/sz${stock.code}.html`;
-  const xueqiuUrl = `https://xueqiu.com/S/${marketPrefix}${stock.code}`;
-  const fundFlowUrl = `https://data.eastmoney.com/zjlx/${stock.code}.html`;
-  const thsUrl = `https://stockpage.10jqka.com.cn/${stock.code}/`;
-  const sinaUrl = `https://finance.sina.com.cn/realstock/company/${marketPrefix.toLowerCase()}${stock.code}/nc.shtml`;
-
-  const trendDesc =
-    stock.ma20Slope !== null && stock.ma20Slope > 0.02
-      ? "20日均线呈强劲向上发散形态，处于多头上升趋势。"
-      : stock.ma20Slope !== null && stock.ma20Slope < -0.02
-      ? "20日均线呈向下开口形态，处于空头调整波段。"
-      : "20日均线走平，处于区间震荡整理阶段。";
-
-  const momentumDesc =
-    stock.ret20d !== null && stock.ret20d > 10
-      ? "近20个交易日动量强劲，跑赢大盘基准。"
-      : stock.ret20d !== null && stock.ret20d < -10
-      ? "近20日跌幅较大，短线超跌或处于弱势动量区。"
-      : "近20日动量适中，跟随大盘平稳波动。";
-
-  const volumeDesc =
-    stock.volumeRatio20 !== null && stock.volumeRatio20 > 1.3
-      ? "量比明显放大，主力资金介入与换手活跃度高。"
-      : stock.volumeRatio20 !== null && stock.volumeRatio20 < 0.8
-      ? "缩量成交，市场交投相对清淡。"
-      : "成交量维持在正常滚动均量水平。";
-
-  const riskDesc =
-    stock.volatility20 !== null && stock.volatility20 < 0.25
-      ? "年化波动率较低，属于低波动稳健型标的。"
-      : "年化波动率较高，属于弹性较大博弈型标的。";
-
-  const tvTheme = theme === "dark" ? "dark" : "light";
-
-  return (
-    <div className={`detail-page-backdrop ${isFullScreen ? "fullscreen" : "drawer"}`} onClick={onClose}>
-      <article className="detail-container" onClick={(e) => e.stopPropagation()}>
-        {/* Top Navigation Bar */}
-        <header className="detail-header">
-          <div className="stock-title-wrap">
-            <h2>
-              {stock.name} <span className="code-tag">{stock.code}</span>
-            </h2>
-            <div className="stock-tags">
-              <span className="tag market-tag">{stock.market === "SH" ? "上海证券交易所" : "深圳证券交易所"}</span>
-              <span className="tag industry-tag">{stock.industry || "主板 / ETF 标的"}</span>
-              <span className="tag date-tag">基准日: {stock.tradeDate}</span>
-              {stock.quoteDate && (
-                <span className="tag date-tag">行情日: {marketDate(stock)}{stock.quoteTime ? ` ${stock.quoteTime}` : ""}</span>
-              )}
-            </div>
-          </div>
-          <div className="header-controls">
-            <button className="icon-btn" onClick={onToggleFullScreen} title={isFullScreen ? "还原窗口" : "全屏详情页"}>
-              {isFullScreen ? "🗗 窗口" : "⛶ 全屏"}
-            </button>
-            <button className="icon-btn close-btn" onClick={onClose} title="关闭">
-              ✕
-            </button>
-          </div>
-        </header>
-
-        {/* Highlight Price & Score Bar */}
-        <section className="key-metrics-banner">
-          <div className="metric-cell">
-            <span className="metric-label">最新收盘价</span>
-            <span className="metric-num price-val">¥ {formatNumber(stock.close)}</span>
-          </div>
-          <div className="metric-cell">
-            <span className="metric-label">20日收益率</span>
-            <span className={`metric-num ${stock.ret20d !== null && stock.ret20d < 0 ? "negative" : "positive"}`}>
-              {formatRatioPercent(stock.ret20d)}
-            </span>
-          </div>
-          <div className="metric-cell">
-            <span className="metric-label">换手率</span>
-            <span className="metric-num">{formatNumber(stock.turnoverRate)}%</span>
-          </div>
-          <div className="metric-cell">
-            <span className="metric-label">20日年化波动率</span>
-            <span className="metric-num">{formatNumber(stock.volatility20)}</span>
-          </div>
-          <div className="metric-cell score-cell">
-            <span className="metric-label">量化综合评分</span>
-            <span className="metric-num score-val">{formatNumber(stock.score, 1)} <span className="score-unit">分</span></span>
-          </div>
-        </section>
-
-        {/* View Switcher Tabs */}
-        <nav className="detail-view-tabs">
-          <button
-            className={activeDetailTab === "chart" ? "view-tab active" : "view-tab"}
-            onClick={() => setActiveDetailTab("chart")}
-          >
-            📈 交互式专业 K 线图
-          </button>
-          <button
-            className={activeDetailTab === "quant" ? "view-tab active" : "view-tab"}
-            onClick={() => setActiveDetailTab("quant")}
-          >
-            🎯 量化多因子与智能诊断
-          </button>
-          <button
-            className={activeDetailTab === "f10" ? "view-tab active" : "view-tab"}
-            onClick={() => setActiveDetailTab("f10")}
-          >
-            📑 全网 F10 与资金流直达
-          </button>
-        </nav>
-
-        {/* Tab 1: Interactive K-Line Chart */}
-        {activeDetailTab === "chart" && (
-          <section className="chart-view-section">
-            <div className="chart-toolbar">
-              <span className="toolbar-label">周期选择：</span>
-              <div className="interval-buttons">
-                <button
-                  className={chartInterval === "D" ? "interval-btn active" : "interval-btn"}
-                  onClick={() => setChartInterval("D")}
-                >
-                  日 K
-                </button>
-                <button
-                  className={chartInterval === "W" ? "interval-btn active" : "interval-btn"}
-                  onClick={() => setChartInterval("W")}
-                >
-                  周 K
-                </button>
-                <button
-                  className={chartInterval === "60" ? "interval-btn active" : "interval-btn"}
-                  onClick={() => setChartInterval("60")}
-                >
-                  60 分钟
-                </button>
-                <button
-                  className={chartInterval === "15" ? "interval-btn active" : "interval-btn"}
-                  onClick={() => setChartInterval("15")}
-                >
-                  15 分钟
-                </button>
-              </div>
-              <span className="chart-source-tip">由 TradingView 云端引擎提供实时图表渲染（0 存储 0 延时）</span>
-            </div>
-            <div className="main-chart-frame">
-              <iframe
-                title="TradingView Realtime Chart"
-                src={`https://s.tradingview.com/widgetembed/?frameElementId=tradingview_widget&symbol=${tvSymbol}&interval=${chartInterval}&hidesidetoolbar=0&symboledit=1&saveimage=1&toolbarbg=${theme === "dark" ? "1e293b" : "f1f3f6"}&theme=${tvTheme}&style=1&timezone=Asia%2FShanghai&locale=zh_CN`}
-                className="full-tv-iframe"
-              />
-            </div>
-          </section>
-        )}
-
-        {/* Tab 2: Quant Factor Diagnostics */}
-        {activeDetailTab === "quant" && (
-          <section className="quant-view-section">
-            <h3>多维度因子明细与智能诊断</h3>
-            <div className="diagnostic-cards">
-              <div className="diag-card">
-                <div className="diag-card-header">
-                  <span className="diag-icon">📈</span>
-                  <strong>趋势维度 (Trend)</strong>
-                  <span className="diag-val">{formatRatioPercent(stock.ma20Slope)}</span>
-                </div>
-                <p className="diag-text">{trendDesc}</p>
-              </div>
-
-              <div className="diag-card">
-                <div className="diag-card-header">
-                  <span className="diag-icon">⚡</span>
-                  <strong>动量维度 (Momentum)</strong>
-                  <span className="diag-val">{formatRatioPercent(stock.ret20d)}</span>
-                </div>
-                <p className="diag-text">{momentumDesc}</p>
-              </div>
-
-              <div className="diag-card">
-                <div className="diag-card-header">
-                  <span className="diag-icon">📊</span>
-                  <strong>量价活跃度 (Volume-Price)</strong>
-                  <span className="diag-val">{formatNumber(stock.volumeRatio20)}</span>
-                </div>
-                <p className="diag-text">{volumeDesc}</p>
-              </div>
-
-              <div className="diag-card">
-                <div className="diag-card-header">
-                  <span className="diag-icon">🛡️</span>
-                  <strong>风险与波动 (Risk)</strong>
-                  <span className="diag-val">{formatNumber(stock.volatility20)}</span>
-                </div>
-                <p className="diag-text">{riskDesc}</p>
-              </div>
-            </div>
-
-            <div className="factors-table-wrap">
-              <h4>技术评分拆解</h4>
-              <div className="factor-grid-full">
-                <div className="factor-pill">
-                  <span>趋势评分</span>
-                  <strong className="score-val">{formatNumber(stock.scoreTrend, 1)}</strong>
-                </div>
-                <div className="factor-pill">
-                  <span>动量评分</span>
-                  <strong className="score-val">{formatNumber(stock.scoreMomentum, 1)}</strong>
-                </div>
-                <div className="factor-pill">
-                  <span>量价评分</span>
-                  <strong className="score-val">{formatNumber(stock.scoreVolumePrice, 1)}</strong>
-                </div>
-                <div className="factor-pill">
-                  <span>风险评分</span>
-                  <strong className="score-val">{formatNumber(stock.scoreRisk, 1)}</strong>
-                </div>
-                <div className="factor-pill">
-                  <span>技术综合评分</span>
-                  <strong className="score-val">{formatNumber(stock.score, 1)}</strong>
-                </div>
-                <div className="factor-pill">
-                  <span>评分数据完整度</span>
-                  <strong>{stock.dataCompleteness ? `${(stock.dataCompleteness * 100).toFixed(0)}%` : "-"}</strong>
-                </div>
-              </div>
-            </div>
-
-            <div className="factors-table-wrap">
-              <h4>技术指标清单</h4>
-              <div className="factor-grid-full">
-                <div className="factor-pill">
-                  <span>5日累计收益</span>
-                  <strong>{formatRatioPercent(stock.ret5d)}</strong>
-                </div>
-                <div className="factor-pill">
-                  <span>20日累计收益</span>
-                  <strong>{formatRatioPercent(stock.ret20d)}</strong>
-                </div>
-                <div className="factor-pill">
-                  <span>60日累计收益</span>
-                  <strong>{formatRatioPercent(stock.ret60d)}</strong>
-                </div>
-                <div className="factor-pill">
-                  <span>20日均线斜率</span>
-                  <strong>{formatRatioPercent(stock.ma20Slope)}</strong>
-                </div>
-                <div className="factor-pill">
-                  <span>20日平均量比</span>
-                  <strong>{formatNumber(stock.volumeRatio20)}</strong>
-                </div>
-                <div className="factor-pill">
-                  <span>20日年化波动率</span>
-                  <strong>{formatNumber(stock.volatility20)}</strong>
-                </div>
-              </div>
-            </div>
-          </section>
-        )}
-
-        {/* Tab 3: External Research Links */}
-        {activeDetailTab === "f10" && (
-          <section className="research-view-section">
-            <h3>全网权威资料一键深度调研</h3>
-            <p className="research-sub">
-              结合各大主流专业金融机构的 F10、财务报表、资金流向及社区研报：
-            </p>
-            <div className="deep-research-links-grid">
-              <a href={eastmoneyUrl} target="_blank" rel="noreferrer" className="portal-card">
-                <div className="portal-icon">📊</div>
-                <div className="portal-info">
-                  <strong>东方财富 F10 深度资料</strong>
-                  <span>查看资产负债表、利润表、分红派息、高管持股与十大股东</span>
-                </div>
-                <span className="arrow">↗</span>
-              </a>
-
-              <a href={fundFlowUrl} target="_blank" rel="noreferrer" className="portal-card">
-                <div className="portal-icon">💰</div>
-                <div className="portal-info">
-                  <strong>东方财富主力资金流向</strong>
-                  <span>查看当日与近期超大单、大单、中单、散户净流入占比</span>
-                </div>
-                <span className="arrow">↗</span>
-              </a>
-
-              <a href={xueqiuUrl} target="_blank" rel="noreferrer" className="portal-card">
-                <div className="portal-icon">💬</div>
-                <div className="portal-info">
-                  <strong>雪球个股讨论与机构研报</strong>
-                  <span>汇聚买方/卖方深度研报、大V深度逻辑剖析与实时互动</span>
-                </div>
-                <span className="arrow">↗</span>
-              </a>
-
-              <a href={thsUrl} target="_blank" rel="noreferrer" className="portal-card">
-                <div className="portal-icon">📈</div>
-                <div className="portal-info">
-                  <strong>同花顺筹码分布与股东分析</strong>
-                  <span>查看获利盘比例、股东户数增减、机构持仓变动与龙虎榜</span>
-                </div>
-                <span className="arrow">↗</span>
-              </a>
-
-              <a href={sinaUrl} target="_blank" rel="noreferrer" className="portal-card">
-                <div className="portal-icon">⚡</div>
-                <div className="portal-info">
-                  <strong>新浪财经实时买卖五档</strong>
-                  <span>即时 Level-1 盘口买卖队列与实时分笔明细</span>
-                </div>
-                <span className="arrow">↗</span>
-              </a>
-            </div>
-          </section>
-        )}
-
-        {/* Footer Action Bar */}
-        <footer className="detail-footer">
-          <div className="footer-left">
-            <span className="tip">💡 提示：按 ESC 键或点击右上角 ✕ 即可返回</span>
-          </div>
-          <div className="footer-right">
-            <button
-              className={isWatchlisted ? "secondary-button" : "primary-button"}
-              onClick={() => void onAdd(stock.code)}
-            >
-              {isWatchlisted ? "★ 已在自选池中" : user ? "+ 加入自选池" : "登录后加入自选"}
-            </button>
-          </div>
-        </footer>
-      </article>
-    </div>
-  );
-}

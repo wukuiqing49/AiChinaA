@@ -190,6 +190,8 @@ def build_payload(
         metadata = _normalize_codes(provider.get_stock_list())
     except RuntimeError as error:
         print(f"stock list unavailable; using fallback universe: {error}")
+        if max_stocks <= 0:
+            raise RuntimeError("Full-market publication requires an authoritative universe") from error
         metadata = _fallback_metadata(max_stocks)
     if max_stocks > 0:
         metadata = metadata.head(max_stocks)
@@ -217,9 +219,13 @@ def build_payload(
     if not frames:
         raise RuntimeError("no stock history could be fetched; " + " | ".join(failures[:5]))
 
-    quotes = pd.concat(frames, ignore_index=True)
-    factors = calculate_technical_factors(quotes, price_adjustment="qfq")
+    # Calculate per instrument and retain only the newest factors before ranking.
+    factors = pd.concat([
+        calculate_technical_factors(frame, price_adjustment="qfq").tail(1)
+        for frame in frames
+    ], ignore_index=True)
     scores = score_technical_factors(factors)
+    quotes = pd.concat([frame.tail(1) for frame in frames], ignore_index=True)
     latest = factors.sort_values("trade_date").groupby("code", as_index=False).tail(1)
     latest_scores = scores.sort_values("trade_date").groupby("code", as_index=False).tail(1)
     result = latest.merge(
@@ -235,6 +241,8 @@ def build_payload(
         quote_latest[quote_columns], on="code", how="left", suffixes=("", "_quote")
     )
     trade_date = str(result["trade_date"].max())
+    score_columns = [column for column in result if column.startswith("score_")]
+    result.loc[result["trade_date"] != trade_date, score_columns] = None
 
     rows: list[dict[str, object]] = []
     for item in result.to_dict(orient="records"):
@@ -295,10 +303,15 @@ def build_payload(
         rows.append({key: _json_value(value) for key, value in row.items()})
 
     payload = {
+        "generatedAt": datetime.now(UTC).isoformat(),
         "runId": f"screener-{trade_date}-{int(time.time())}",
         "tradeDate": trade_date,
         "stocks": rows,
         "indices": [],
+        "quality": {"expectedStocks": len(metadata), "acceptedStocks": len(rows),
+                    "coverage": len(rows) / len(metadata),
+                    "freshStocks": sum(row["tradeDate"] == trade_date for row in rows),
+                    "failedStocks": len(failures)},
     }
     return payload, failures
 
@@ -392,6 +405,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--end-date", default=date.today().isoformat())
     parser.add_argument("--max-stocks", type=int, default=0, help="0 means all saved instruments")
     parser.add_argument("--workers", type=int, default=4)
+    parser.add_argument("--expected-trade-date", default="", help="Reject stale historical factors on scheduled settlement")
     return parser.parse_args()
 
 
@@ -412,6 +426,11 @@ def main() -> int:
     if isinstance(provider, LocalHistoryProvider):
         payload["indices"] = _build_index_payload(args.data_dir)
         _apply_realtime_quotes(payload, args.data_dir.parent / "realtime" / "tencent-quotes.json")
+    quality = payload["quality"]
+    if args.expected_trade_date and payload["tradeDate"] != args.expected_trade_date:
+        raise RuntimeError(f"Historical data is stale: expected {args.expected_trade_date}, got {payload['tradeDate']}")
+    if quality["coverage"] < 0.98:
+        raise RuntimeError(f"Refusing incomplete screener snapshot: {quality}")
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(
         json.dumps(payload, ensure_ascii=False, allow_nan=False), encoding="utf-8"

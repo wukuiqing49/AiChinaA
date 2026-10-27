@@ -37,6 +37,14 @@ describe("fixed account authentication", () => {
     await expect(verifyFixedCredentials("tester", "incorrect-password", env)).rejects.toBeInstanceOf(AuthError);
   });
 
+  it("revokes existing sessions after account removal or password change", async () => {
+    const user = await verifyFixedCredentials("tester", "correct-horse-battery-staple", env);
+    const token = await createSession(user, env);
+    await expect(verifySession(token, {...env,FIXED_ACCOUNTS:JSON.stringify([{...JSON.parse(env.FIXED_ACCOUNTS)[0],username:"another"}])})).rejects.toBeInstanceOf(AuthError);
+    const account=JSON.parse(env.FIXED_ACCOUNTS)[0];
+    await expect(verifySession(token,{...env,FIXED_ACCOUNTS:JSON.stringify([{...account,passwordHash:"a".repeat(44)}])})).rejects.toBeInstanceOf(AuthError);
+  });
+
   it("accepts a single account object for simple deployments", async () => {
     const account = JSON.parse(env.FIXED_ACCOUNTS)[0];
     const singleAccountEnv = { ...env, FIXED_ACCOUNTS: JSON.stringify(account) };

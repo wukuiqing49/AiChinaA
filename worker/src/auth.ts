@@ -32,7 +32,9 @@ export async function verifyFixedCredentials(
 }
 
 export async function createSession(user: SessionUser, env: Env): Promise<string> {
-  return new SignJWT({ username: user.username, displayName: user.displayName })
+  const account=readFixedAccounts(env).find((item)=>item.username===user.username);
+  if(!account) throw new AuthError("Account is no longer active.");
+  return new SignJWT({ username: user.username, displayName: user.displayName, credentialVersion:await credentialVersion(account) })
     .setProtectedHeader({ alg: "HS256" })
     .setSubject(user.id)
     .setIssuedAt()
@@ -41,16 +43,23 @@ export async function createSession(user: SessionUser, env: Env): Promise<string
 }
 
 export async function verifySession(token: string, env: Env): Promise<SessionUser> {
-  const verified = await jwtVerify(token, sessionKey(env));
+  const verified = await jwtVerify(token, sessionKey(env),{algorithms:["HS256"]});
   const username = typeof verified.payload.username === "string" ? verified.payload.username : null;
   if (!verified.payload.sub || !username) {
     throw new AuthError("Session is invalid.");
   }
+  const account=readFixedAccounts(env).find((item)=>item.username===username);
+  if(!account || verified.payload.credentialVersion!==await credentialVersion(account)) throw new AuthError("Account credentials changed.");
   return {
     id: verified.payload.sub,
     username,
     displayName: typeof verified.payload.displayName === "string" ? verified.payload.displayName : null,
   };
+}
+
+async function credentialVersion(account: FixedAccount): Promise<string> {
+  const digest=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(`${account.salt}:${account.passwordHash}:${account.iterations}`));
+  return Array.from(new Uint8Array(digest),(byte)=>byte.toString(16).padStart(2,"0")).join("");
 }
 
 function readFixedAccounts(env: Env): FixedAccount[] {
