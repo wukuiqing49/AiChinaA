@@ -29,6 +29,45 @@ function setup() {
   return { ...db, env, post, begin, chunk, commit };
 }
 describe("versioned publication with real SQLite", () => {
+  it.each(["screener", "realtime-quotes", "industry-map", "fund-flow", "industry-fund-flow", "valuation", "financials"])("checks %s schema without creating a publication", async (dataset) => {
+    const db = setup();
+    const response = await db.post(dataset, { operation: "preflight", runId: "preflight-check" });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ status: "ready", dataset, schemaVersion: 2, maxChunkRows: 10 });
+    expect(db.sqlite.prepare("SELECT COUNT(*) AS n FROM dataset_runs").get()).toMatchObject({ n: 0 });
+  });
+  it("rejects unauthorized preflight requests and detects missing snapshot columns", async () => {
+    const db = setup();
+    const body = { operation: "preflight", runId: "preflight-check" };
+    const unauthorized = await app.request("/api/internal/publish-screener", { method: "POST", body: JSON.stringify(body) }, db.env);
+    expect(unauthorized.status).toBe(401);
+    db.sqlite.exec("DROP TABLE screen_snapshot; CREATE TABLE screen_snapshot (_run_id TEXT)");
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const response = await db.post("screener", body);
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ code: "PUBLISH_SCHEMA_MISMATCH", retryable: false });
+  });
+  it.each([
+    ["no such table: screen_snapshot", "PUBLISH_SCHEMA_MISMATCH", false],
+    ["table screen_snapshot has no column named score_risk", "PUBLISH_SCHEMA_MISMATCH", false],
+    ["D1 database daily write quota exceeded", "PUBLISH_QUOTA_EXCEEDED", false],
+    ["database is locked", "PUBLISH_FAILED", true],
+  ])("reports actionable chunk failures: %s", async (cause, code, retryable) => {
+    const db = setup();
+    await db.begin("run-diagnostic", 1);
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(db.database, "batch").mockRejectedValueOnce(new Error("D1 operation failed", { cause: new Error(cause) }));
+    const response = await db.chunk("run-diagnostic", 0, [stock]);
+    expect(response.status).toBe(503);
+    const body = await response.json() as { requestId: string };
+    expect(body).toMatchObject({ code, retryable });
+    const entry = JSON.parse(log.mock.calls[0][0]);
+    expect(entry).toMatchObject({ requestId: body.requestId, dataset: "screener", operation: "chunk", runId: "run-diagnostic", chunkIndex: 0 });
+    expect(entry.message).toContain(cause);
+    expect(JSON.stringify(body)).not.toContain(cause);
+    expect(db.sqlite.prepare("SELECT COUNT(*) AS n FROM dataset_chunks").get()).toMatchObject({ n: 0 });
+    expect((await db.chunk("run-diagnostic", 0, [stock])).status).toBe(200);
+  });
   it("requires v2 and bounded chunks", async () => {
     const db = setup(); expect((await db.post("screener", { stocks: [stock] })).status).toBe(426);
     expect((await db.begin("run-large", 11)).status).toBe(200);

@@ -18,7 +18,7 @@ const schemas: Record<string, z.ZodType> = {
   "industry-map": industryPublishSchema, financials: financialPublishSchema,
 };
 const envelope = z.object({
-  operation: z.enum(["begin", "chunk", "status", "commit"]),
+  operation: z.enum(["preflight", "begin", "chunk", "status", "commit"]),
   runId: z.string().regex(/^[A-Za-z0-9._-]{8,100}$/),
 });
 const manifest = envelope.extend({
@@ -34,6 +34,16 @@ interface Run {
   expected_rows: number; expected_chunks: number; payload_hash: string; meta_json: string;
 }
 type Row = Record<string, unknown>;
+function errorMessages(error: unknown): string {
+  const messages: string[] = [];
+  const seen = new Set<unknown>();
+  while (error != null && !seen.has(error) && messages.length < 5) {
+    seen.add(error);
+    messages.push(String(error));
+    error = error instanceof Error ? error.cause : undefined;
+  }
+  return messages.join("; ").slice(0, 2000);
+}
 class PublishError extends Error {
   constructor(public code: string, message: string, public status: 400 | 409 | 413 | 426 = 400) { super(message); }
 }
@@ -115,6 +125,9 @@ export function registerPublishing(app: Hono<{ Bindings: Env }>) {
   for (const dataset of Object.keys(schemas)) app.post(`/api/internal/publish-${dataset}`, async (context) => {
     const requestId = crypto.randomUUID();
     const startedAt=performance.now();
+    let operation: string | undefined;
+    let runId: string | undefined;
+    let chunkIndex: unknown;
     try {
       const supplied = context.req.header("X-Publish-Secret") ?? "";
       const secret = context.env.PUBLISH_SECRET;
@@ -124,8 +137,29 @@ export function registerPublishing(app: Hono<{ Bindings: Env }>) {
       const raw=body.value;
       const parsed = envelope.safeParse(raw);
       if (!parsed.success) throw new PublishError("PROTOCOL_UPGRADE_REQUIRED", "Publisher protocol v2 is required", 426);
-      const { operation, runId } = parsed.data;
+      ({ operation, runId } = parsed.data);
+      chunkIndex = raw.chunkIndex;
       const db = context.env.DB;
+      if (operation === "preflight") {
+        const tables = dataset === "screener" ? ["stock_snapshot", "screen_snapshot", "index_snapshot"]
+          : dataset === "realtime-quotes" ? []
+          : [{ "fund-flow": "fund_snapshot", valuation: "valuation_snapshot", financials: "financial_snapshot",
+            "industry-map": "industry_snapshot", "industry-fund-flow": "sector_snapshot" }[dataset]!];
+        // Resolve every required column without scanning rows or changing active data.
+        const checks = tables.map((table) => db.prepare(`SELECT _run_id,${snapshotTables[table].join(",")} FROM ${table} LIMIT 0`));
+        checks.push(db.prepare("SELECT run_id,dataset,status,data_date,expected_rows,expected_chunks,payload_hash,meta_json,started_at,source_time,completed_at FROM dataset_runs LIMIT 0"),
+          db.prepare("SELECT run_id,chunk_index,payload_hash,row_count FROM dataset_chunks LIMIT 0"),
+          db.prepare("SELECT run_id,item_key FROM dataset_items LIMIT 0"),
+          db.prepare("SELECT dataset,run_id,data_date,started_at,source_time FROM dataset_active LIMIT 0"));
+        if (dataset === "screener") checks.push(
+          db.prepare("SELECT code,name,instrument_type,is_st,trade_date,close,updated_at FROM stock_latest LIMIT 0"),
+          db.prepare("SELECT run_id,trade_date,run_kind,status,row_count,started_at,completed_at FROM sync_runs LIMIT 0"),
+          db.prepare("SELECT id,trade_date,reference_trade_date,reference_close,code,rank,score,reasons_json,config_version,run_id,created_at FROM recommendation_snapshots LIMIT 0"));
+        if (dataset === "industry-fund-flow") checks.push(db.prepare("SELECT industry,data_date,source,inflow_amount,outflow_amount,net_inflow,company_count,pct_change,fetched_at FROM industry_fund_flow_daily LIMIT 0"));
+        if (dataset === "realtime-quotes") checks.push(db.prepare("SELECT code,instrument_type,name,close,pct_change,quote_date,quote_time,quote_source,updated_at FROM live_quotes LIMIT 0"));
+        await db.batch(checks);
+        return context.json({ status: "ready", dataset, schemaVersion: 2, maxChunkRows: MAX_CHUNK_ROWS });
+      }
       if (operation === "begin") {
         const info = manifest.safeParse(raw);
         if (!info.success) throw new PublishError("INVALID_MANIFEST", "Invalid publish manifest");
@@ -238,7 +272,15 @@ export function registerPublishing(app: Hono<{ Bindings: Env }>) {
       return context.json({ runId, status: "completed", rowCount: run.expected_rows });
     } catch (error) {
       if (error instanceof PublishError) return context.json({ error: error.message, code: error.code, retryable: false, requestId }, error.status);
-      console.error(JSON.stringify({ requestId, message: String(error).slice(0, 500) }));
+      const message = errorMessages(error);
+      console.error(JSON.stringify({ requestId, dataset, operation, runId, chunkIndex,
+        durationMs: performance.now() - startedAt, message }));
+      if (/no such (?:table|column)|has no column named|schema has changed/i.test(message)) {
+        return context.json({ error: "Publish database schema is incompatible; apply D1 migrations before resuming the same run ID", code: "PUBLISH_SCHEMA_MISMATCH", retryable: false, requestId }, 503);
+      }
+      if (/exceeded.*(?:quota|daily|storage)|(?:quota|daily|storage).*exceeded|SQLITE_FULL|database or disk is full/i.test(message)) {
+        return context.json({ error: "Publish database quota exceeded; restore capacity before resuming the same run ID", code: "PUBLISH_QUOTA_EXCEEDED", retryable: false, requestId }, 503);
+      }
       return context.json({ error: "Publish operation failed; resume using the same run ID", code: "PUBLISH_FAILED", retryable: true, requestId }, 503);
     }
   });

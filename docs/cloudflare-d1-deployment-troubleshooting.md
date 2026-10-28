@@ -27,3 +27,14 @@ pnpm --filter @a-share/worker exec wrangler d1 migrations apply quant-core --rem
 前两个命令用于确认读取路径可达，不能单独证明 D1 Edit 已授权。最后一个实际应用迁移；全部成功后再部署。
 
 官方依据：[API Token 权限](https://developers.cloudflare.com/fundamentals/api/reference/permissions/)、[Worker binding 与资源权限](https://developers.cloudflare.com/workers/authorization/workers/)、[D1 迁移](https://developers.cloudflare.com/d1/reference/migrations/)。
+## 发布首个 chunk 持续返回 503
+
+`PUBLISH_FAILED` 是 Worker 捕获异常后的通用响应，不能单凭它判断为网络超时或批次过大。`begin` 成功而 `chunkIndex=0` 失败说明任务记录已可访问，但尚未确认任何数据批次；增加 Python timeout 不会修复明确返回的 HTTP 503。
+
+在 Cloudflare Worker 日志中用响应的 `requestId` 查找异常，或在重新续传前运行 `pnpm --filter @a-share/worker exec wrangler tail --format json`。发布错误日志包含 dataset、operation、runId、chunkIndex 和底层异常 cause，不记录发布密钥或股票请求正文。日志采样可能导致旧请求无法查到；必要时在实时 tail 连接后复现。
+
+- `PUBLISH_SCHEMA_MISMATCH`：应用远程 D1 migrations 并部署对应 Worker，再续传。
+- `PUBLISH_QUOTA_EXCEEDED`：检查 D1 用量和容量，恢复可写额度后续传；勿反复重跑整套采集。
+- `PUBLISH_FAILED`：检查同一 requestId 的服务端 message，保留瞬时故障重试；该响应本身不证明具体原因。
+
+修复底层问题后使用 **Resume preserved screener publication**，输入原 GitHub Actions workflow run ID。保留原发布包和其中的 runId，不修改 chunk 大小或重新生成内容；已经接受的批次会自动跳过。发布任务过期后需重新构建发布包。

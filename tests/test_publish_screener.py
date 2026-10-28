@@ -68,7 +68,7 @@ def test_publish_retries_connection_failure(monkeypatch):
         {"runId": "run-20260825"}, url="https://example.test", secret="secret", timeout=3
     )
     assert result == {"status": "completed"}
-    assert calls == [3, 60, 3, 180, 3, 300, 3]
+    assert calls == [3, 5, 3, 15, 3, 30, 3]
     assert len({request.data for request in requests}) == 1
 
 

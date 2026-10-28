@@ -32,7 +32,7 @@ REQUIRED_STOCK_FIELDS = {
     "volatility20",
 }
 DEFAULT_PUBLISH_TIMEOUT_SECONDS = 300
-PUBLISH_RETRY_DELAYS_SECONDS = (60, 180, 300)
+PUBLISH_RETRY_DELAYS_SECONDS = (5, 15, 30)
 
 
 def load_payload(path: Path) -> dict[str, object]:
