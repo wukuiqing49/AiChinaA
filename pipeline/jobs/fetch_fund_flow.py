@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from datetime import date, datetime
 from pathlib import Path
 
@@ -13,7 +14,7 @@ from pipeline.providers.akshare_provider import AkShareProvider
 
 def _number(value: object) -> float | None:
     number = pd.to_numeric(value, errors="coerce")
-    return None if pd.isna(number) else float(number)
+    return None if pd.isna(number) or not math.isfinite(float(number)) else float(number)
 
 
 def _column(frame: pd.DataFrame, name: str) -> pd.Series:
@@ -62,6 +63,8 @@ def fetch_payload(provider: AkShareProvider, data_date: str | None = None) -> di
                 "mainNetInflow10d": row.get("mainNetInflow10日"),
             }
         )
+    rows = [{key: value if key == "code" else _number(value) for key, value in row.items()}
+            for row in rows]
     return {
         "dataDate": data_date or date.today().isoformat(),
         "source": "akshare/eastmoney",

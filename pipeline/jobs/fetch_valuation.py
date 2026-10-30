@@ -8,6 +8,7 @@ from pathlib import Path
 import pandas as pd
 
 from pipeline.jobs.snapshot_universe import filter_rows_to_universe, load_universe_codes
+from pipeline.providers.eastmoney_snapshot import fetch_snapshot
 
 
 def _number(value: object) -> float | None:
@@ -20,9 +21,10 @@ def main() -> int:
     parser.add_argument("--output", type=Path, default=Path("data/realtime/valuation.json"))
     parser.add_argument("--universe", type=Path, default=Path("data/historical/checkpoints.json"))
     args = parser.parse_args()
-    import akshare as ak
-
-    frame = ak.stock_zh_a_spot_em()
+    frame = fetch_snapshot({
+        "f12": "代码", "f9": "市盈率-动态", "f23": "市净率",
+        "f20": "总市值", "f21": "流通市值",
+    })
     rows = []
     for item in frame.to_dict(orient="records"):
         code = str(item.get("代码", "")).strip().zfill(6)

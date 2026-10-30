@@ -259,8 +259,18 @@ class AkShareProvider:
 
     def get_individual_fund_flow_rank(self, indicator: str) -> pd.DataFrame:
         """Return the all-market stock money-flow ranking for one lookback window."""
+        from pipeline.providers.eastmoney_snapshot import fetch_snapshot
+
+        fields = {"今日": "f62", "3日": "f267", "5日": "f164", "10日": "f174"}
+        columns = {"f12": "代码", fields[indicator]: f"{indicator}主力净流入-净额"}
+        if indicator == "今日":
+            columns.update({
+                "f184": "今日主力净流入-净占比", "f66": "今日超大单净流入-净额",
+                "f72": "今日大单净流入-净额", "f78": "今日中单净流入-净额",
+                "f84": "今日小单净流入-净额",
+            })
         return self._tag_source(
-            self._call("stock_individual_fund_flow_rank")(indicator=indicator),
+            fetch_snapshot(columns, fund_flow=True),
             "akshare/eastmoney",
         )
 

@@ -198,20 +198,41 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p data/realtime
           for attempt in 1 2 3; do
-            if python -m "pipeline.jobs.fetch_${DATASET_MODULE}" --output "data/realtime/${DATASET}.json"; then
+            if python -m "pipeline.jobs.fetch_${DATASET_MODULE}" --output "data/realtime/${DATASET}.json" >> "data/realtime/${DATASET}-fetch.log" 2>&1; then
+              cat "data/realtime/${DATASET}-fetch.log"
+              echo "available=true" >> "$GITHUB_OUTPUT"
               exit 0
             fi
-            if [ "$attempt" = 3 ]; then exit 1; fi
+            if [ "$attempt" = 3 ]; then
+              if [ "$DATASET" = valuation ] || [ "$DATASET" = fund-flow ]; then
+                echo "available=false" >> "$GITHUB_OUTPUT"
+                echo "::notice::${DATASET} fetch unavailable after 3 attempts; skipping publication and keeping the last successful dataset. See fetch diagnostics artifact."
+                exit 0
+              fi
+              cat "data/realtime/${DATASET}-fetch.log"
+              exit 1
+            fi
             sleep 20
           done
+      - name: Preserve skipped fetch diagnostics
+        if: ${{ steps.fetch.outputs.available == 'false' }}
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: fetch-diagnostics-${{ matrix.dataset }}
+          path: data/realtime/${{ matrix.dataset }}-fetch.log
+          retention-days: 7
       - name: Preserve dataset for publication recovery
+        if: ${{ steps.fetch.outputs.available == 'true' }}
         uses: actions/upload-artifact@v4
         with:
           name: publish-${{ matrix.dataset }}
           path: data/realtime/${{ matrix.dataset }}.json
           retention-days: 30
       - name: Publish independent dataset
+        if: ${{ steps.fetch.outputs.available == 'true' }}
         id: publish
         shell: bash
         run: |
@@ -222,7 +243,11 @@ jobs:
       - name: Dataset summary
         if: ${{ always() }}
         run: |
-          echo "${DATASET}: fetch=${{ steps.fetch.outcome }}, publish=${{ steps.publish.outcome }}, job=${{ job.status }}" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ steps.fetch.outputs.available }}" = false ]; then
+            echo "${DATASET}: skipped (fetch unavailable after retries). No new data published; last successful dataset retained with its original date. See fetch-diagnostics-${DATASET} artifact." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "${DATASET}: fetch=${{ steps.fetch.outcome }}, publish=${{ steps.publish.outcome }}, job=${{ job.status }}" >> "$GITHUB_STEP_SUMMARY"
+          fi
 
   cleanup:
     needs: [calendar, run-pipeline, supplemental]
